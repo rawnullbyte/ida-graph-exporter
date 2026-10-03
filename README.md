@@ -7,11 +7,12 @@ single self-contained interactive HTML page. The plugin reads the currently
 focused graph view and writes the page directly, so there is no conversion step
 and no other tool to install.
 
-The page uses plain HTML and CSS only — no SVG, no canvas, no external assets —
-so it renders offline, including on a machine with no network access. It shows
-IDA's own layout: basic blocks sit at the coordinates IDA exported, edges follow
-the routed polylines, and the disassembly text keeps IDA's colours. Drag to pan,
-scroll to zoom.
+The page is a single self-contained file — no external assets — so it renders
+offline, including on a machine with no network access. It shows IDA's own
+layout: basic blocks are positioned divs at the coordinates IDA exported, the
+edges are SVG paths following the routed polylines, and the disassembly keeps
+IDA's colours. The whole drawing sits in one transformed layer, so the edges
+and their arrowheads scale with the zoom. Drag to pan, scroll to zoom.
 
 The native code ships (amalgamated) copies of [miniz 3.0.2](https://github.com/richgel999/miniz)
 and [jsoncpp 1.9.5](https://github.com/open-source-parsers/jsoncpp) for

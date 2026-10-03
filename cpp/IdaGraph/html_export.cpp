@@ -1,5 +1,7 @@
-// Renders the exported graph as a single self-contained HTML page: plain HTML
-// and CSS, no SVG, no canvas, no external assets, so it works offline.
+// Renders the exported graph as a single self-contained HTML page with no
+// external assets, so it works offline. Blocks are positioned divs; edges are
+// SVG paths with marker arrowheads, which lets the browser handle stroking,
+// joins and arrow orientation instead of this code drawing segments by hand.
 //
 // This is a deliberate mirror of the json2html.py generator; the two produce
 // identical geometry (verified block-for-block, edge-for-edge and
@@ -56,11 +58,6 @@ static std::string color_hex(unsigned v) {
     return b;
 }
 
-static std::string css_rgb(unsigned v) {
-    char b[32];
-    snprintf(b, sizeof(b), "rgb(%d,%d,%d)", v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff);
-    return b;
-}
 
 // ------------------------------------------------------------- base64
 // The plugin links IDA's base64_encode(); IDA has no decode, so decode locally.
@@ -202,8 +199,42 @@ static Bounds graph_bounds(const Json::Value &g) {
 }
 
 // ------------------------------------------------------------------ render
+// Marker ids must be unique per colour, and stable so identical colours share
+// one definition.
+static std::string marker_id(unsigned color) {
+    return fmt("ar%06x", color & 0xffffff);
+}
+
+// <defs> holding one arrowhead per distinct edge colour. Using SVG markers
+// means the browser draws the head along the path direction itself - no
+// orientation maths, and it scales with the drawing like everything else.
+static std::string build_defs(const Json::Value &g) {
+    std::vector<unsigned> seen;
+    std::string out;
+
+    for (const auto &e : g["edges"]) {
+        unsigned c = e["color"].asUInt() & 0xffffff;
+        if (std::find(seen.begin(), seen.end(), c) != seen.end())
+            continue;
+        seen.push_back(c);
+
+        /* orient="auto" rotates the head onto the path's direction at its end.
+         * markerUnits is left at its default (strokeWidth) so the head tracks
+         * the line weight, and refX sits on the triangle's apex so the tip
+         * lands exactly on the path end rather than past it. */
+        out += fmt("<marker id=\"%s\" viewBox=\"0 0 10 10\" refX=\"10\" refY=\"5\""
+                   " markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\""
+                   " markerUnits=\"strokeWidth\">"
+                   "<path d=\"M0,0 L10,5 L0,10 z\" fill=\"#%s\"/></marker>",
+                   marker_id(c).c_str(), color_hex(c).c_str());
+    }
+    return out;
+}
+
+// Every edge is a single <path>, so there are no segment joints to fill and
+// nothing can overlap: the browser strokes one continuous polyline.
 static std::string build_edges(const Json::Value &g, double ox, double oy) {
-    std::string lines, arrows;
+    std::string paths;
 
     for (const auto &e : g["edges"]) {
         std::vector<std::pair<double, double>> pts;
@@ -214,71 +245,16 @@ static std::string build_edges(const Json::Value &g, double ox, double oy) {
         }
         if (pts.size() < 2) continue;
 
-        // Arrow direction comes from the true final segment.
-        size_t last = pts.size() - 1;
-        double dx = pts[last].first - pts[last - 1].first;
-        double dy = pts[last].second - pts[last - 1].second;
+        std::string d;
+        for (size_t i = 0; i < pts.size(); i++)
+            d += fmt("%s%.2f,%.2f", i ? " L" : "M", pts[i].first, pts[i].second);
 
-        // The line runs all the way to the endpoint; the arrowhead is drawn on
-        // top of it and covers the last ARROW_L of it, so stopping the line
-        // short only ever produced a visible gap.
-        //
-        // The head is a CSS border triangle whose apex is the mid-point of its
-        // right edge. Putting that apex exactly on the endpoint and rotating
-        // about the same point is what keeps the tip on the end of the line.
-        // --iw cancels the world's zoom so the head stays a constant size on
-        // screen, while calc() keeps it anchored to the endpoint as it shrinks.
-        double tip_ang = atan2(dy, dx) * 180.0 / M_PI;
-        std::string col = css_rgb(e["color"].asUInt());
-
-        /* The head is a CSS border triangle whose apex is the mid-point of its
-         * right edge, at (ARROW_L, ARROW_W/2) before rotation. Subtracting that
-         * offset un-rotated puts the tip past the endpoint and swings it off the
-         * line; the offset has to be rotated by the same angle first. Sizes are
-         * in --iu units (1/zoom) so the head keeps a constant screen size, and
-         * the apex lands on the endpoint for every zoom. */
-        double ra = tip_ang * M_PI / 180.0;
-        double apex_x = ARROW_L * cos(ra) - (ARROW_W / 2) * sin(ra);
-        double apex_y = ARROW_L * sin(ra) + (ARROW_W / 2) * cos(ra);
-
-        arrows += fmt("<div class=\"arrow\" style=\"--c:%s;"
-                      "left:calc(%.2fpx - %.2f * var(--iu,1px));"
-                      "top:calc(%.2fpx - %.2f * var(--iu,1px));"
-                      "transform:rotate(%.2fdeg)\"></div>",
-                      col.c_str(),
-                      pts[last].first, apex_x,
-                      pts[last].second, apex_y,
-                      tip_ang);
-
-        for (size_t i = 0; i + 1 < pts.size(); i++) {
-            double px = pts[i].first, py = pts[i].second;
-            double qx = pts[i + 1].first, qy = pts[i + 1].second;
-            double ddx = qx - px, ddy = qy - py;
-            double len = sqrt(ddx * ddx + ddy * ddy);
-            if (len < 0.5) continue;
-            double ang = atan2(ddy, ddx) * 180.0 / M_PI;
-
-            lines += fmt("<div class=\"edge\" style=\"--c:%s;left:%.2fpx;top:%.2fpx;"
-                         "width:%.2fpx;transform:rotate(%.2fdeg)\"></div>",
-                         col.c_str(), px, py, len, ang);
-        }
-
-        /* Fill the joints. Two rectangles meeting at an angle leave a notch on
-         * the outside of the bend, which reads as an unfinished corner. A square
-         * of the line's own thickness centred on each interior vertex covers the
-         * joint at any angle - a square needs no rotation - and cannot overshoot
-         * the way extending the segments does, because it is never wider than
-         * the line itself. That earlier attempt extended both ends and drew a
-         * visible "+" past the corner; this cannot. */
-        for (size_t i = 1; i + 1 < pts.size(); i++) {
-            lines += fmt("<div class=\"cap\" style=\"--c:%s;"
-                         "left:calc(%.2fpx - (1.0px * var(--iwx,1) + 0.8px) / 2);"
-                         "top:calc(%.2fpx - (1.0px * var(--iwx,1) + 0.8px) / 2)\">"
-                         "</div>",
-                         col.c_str(), pts[i].first, pts[i].second);
-        }
+        unsigned c = e["color"].asUInt() & 0xffffff;
+        paths += fmt("<path d=\"%s\" fill=\"none\" stroke=\"#%s\""
+                     " stroke-width=\"2\" marker-end=\"url(#%s)\"/>",
+                     d.c_str(), color_hex(c).c_str(), marker_id(c).c_str());
     }
-    return lines + arrows;   // arrowheads above the lines
+    return paths;
 }
 
 static std::string build_blocks(const Json::Value &g, double ox, double oy) {
@@ -318,7 +294,15 @@ bool export_graph_html(const Json::Value &root, const char *filename)
     double W = std::max(b.x1 - b.x0, 1.0) + 2 * pad;
     double H = std::max(b.y1 - b.y0, 1.0) + 2 * pad;
 
-    std::string content = build_edges(g, ox, oy) + build_blocks(g, ox, oy);
+    /* Edges go in one SVG layer sized to the whole drawing; the blocks sit on
+     * top as ordinary positioned divs. The browser draws the polylines and
+     * their markers, so there is no per-segment geometry to get wrong. */
+    std::string edges =
+        fmt("<svg class=\"edges\" width=\"%d\" height=\"%d\" "
+            "xmlns=\"http://www.w3.org/2000/svg\"><defs>%s</defs>%s</svg>",
+            (int)W, (int)H, build_defs(g).c_str(), build_edges(g, ox, oy).c_str());
+
+    std::string content = edges + build_blocks(g, ox, oy);
     std::string title = esc(g["name"].asString()) + " - graph";
 
     std::ofstream out(filename, std::ios::binary);
@@ -339,8 +323,9 @@ bool export_graph_html(const Json::Value &root, const char *filename)
     out << "#wrap{position:absolute;top:40px;left:0;right:0;bottom:0;overflow:hidden;"
            "cursor:grab}#wrap.dragging{cursor:grabbing}\n";
     out << "#world{position:absolute;top:0;left:0;transform-origin:0 0;"
-           "--iw:1;--iwx:1;will-change:transform}\n";
+           "will-change:transform}\n";
     out << "#canvas{position:absolute;top:0;left:0}\n";
+    out << ".edges{position:absolute;top:0;left:0;overflow:visible;pointer-events:none}\n";
     out << "#wrap.dragging{cursor:grabbing}\n";
     out << ".block{position:absolute;box-sizing:border-box;background:#2d2d2d;"
            "border:1px solid #000}\n";
@@ -360,24 +345,6 @@ bool export_graph_html(const Json::Value &root, const char *filename)
            "'Noto Sans Mono','Courier New',monospace;"
            "font-kerning:none;font-variant-ligatures:none;"
            "font-size:" << FONT_PX << "px;font-weight:bold}\n";
-    /* An edge is a rectangle whose length is in world units but whose thickness
-     * is in device pixels, so it keeps a visible weight at any zoom. CSS floors
-     * a computed length at 0 and browsers then drop the box entirely, which is
-     * what made whole runs of edges vanish when zoomed out; --iwx is the
-     * inverse zoom, so thickness * --iwx is a constant 1.3 + 1.3*zoom - never
-     * zero, and at least 1px. transform-origin stays at the left mid-point so
-     * the extra thickness grows outward rather than shifting the endpoint. */
-    out << ".edge{position:absolute;margin-top:calc(-0.5px * var(--iwx,1));"
-           "height:calc(1.0px * var(--iwx,1) + 0.8px);"
-           "background:var(--c,#888);transform-origin:0 50%}\n";
-    out << ".cap{position:absolute;background:var(--c,#888);"
-           "width:calc(1.0px * var(--iwx,1) + 0.8px);"
-           "height:calc(1.0px * var(--iwx,1) + 0.8px)}\n";
-    out << ".arrow{position:absolute;width:0;height:0;border-style:solid;"
-           "border-width:calc(3.5px * var(--iwx,1)) 0 "
-           "calc(3.5px * var(--iwx,1)) calc(9px * var(--iwx,1));"
-           "border-color:transparent transparent transparent var(--c,#888);"
-           "transform-origin:0 0}\n";
     out << ".block.sel{outline:2px solid #fff;outline-offset:-1px}\n";
     for (unsigned i = 0; i < sizeof(CLR_VALUES) / sizeof(CLR_VALUES[0]); i++)
         out << ".txt_col_" << fmt("%02x", i) << "{color:#" << color_hex(CLR_VALUES[i]) << "}\n";
@@ -396,12 +363,6 @@ var stat=document.getElementById('stat');
 var s=1,tx=0,ty=0;
 function ap(){
   world.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';
-  // --iwx cancels the zoom for things that must stay a constant size on screen
-  // (line thickness, arrowheads); --iu is the same for lengths used inside
-  // calc(), where a bare number cannot be multiplied by a px term.
-  world.style.setProperty('--iw',String(s));
-  world.style.setProperty('--iwx',String(1/s));
-  world.style.setProperty('--iu',String(1/s)+'px');
   stat.textContent=Math.round(s*100)+'%';
 }
 function ct(){tx=(wrap.clientWidth-W*s)/2;ty=(wrap.clientHeight-H*s)/2;ap();}
