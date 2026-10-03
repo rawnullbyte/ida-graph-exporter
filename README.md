@@ -2,7 +2,7 @@
 
 ## What?
 
-Plugin for IDA Pro that allows to export a function as rendered in the graph view to a vectorized SVG. The native plugin retrieves all relevant information from the currently focused graph view and stores them into a JSON. The JSON is then to be processed `json2svg.py` to produce an SVG. Compiled versions of the plugin for IDA Versions 7.0 to 8.2 can be found on the [Release page](https://github.com/kirschju/ida-graph-exporter/releases).
+Plugin for IDA Pro that allows to export a function as rendered in the graph view to a vectorized SVG or an interactive HTML page. The native plugin retrieves all relevant information from the currently focused graph view and stores them into a JSON. The JSON is then processed by `json2svg.py` to produce an SVG and/or a self-contained HTML viewer. Compiled versions of the plugin for IDA Versions 7.0 to 8.2 can be found on the [Release page](https://github.com/kirschju/ida-graph-exporter/releases).
 
 The native code ships (amalgamated) copies of [miniz 3.0.2](https://github.com/richgel999/miniz) and [jsoncpp 1.9.5](https://github.com/open-source-parsers/jsoncpp) for compression and JSON serialization. The python script converting JSON to SVG needs [svgwrite](https://pypi.org/project/svgwrite/) installed.
 
@@ -12,8 +12,18 @@ The native code ships (amalgamated) copies of [miniz 3.0.2](https://github.com/r
 [Release page](https://github.com/kirschju/ida-graph-exporter/releases).
 2. Copy both `IdaGraph.dll` and `IdaGraph64.dll` into the `plugins` directory of your local IDA Pro installation and reload IDA.
 3. Open the control flow graph that is to be exported in a graph viewer tab and export it to JSON via `Edit -> Plugins -> Graph Exporter`.
-4. Convert the JSON to SVG using `json2svg.py <output.json>`. The output file name is the same as the input plus an `.svg` suffix.
+4. Convert the JSON with `json2svg.py <output.json> [svg|html|all]`. With no
+format argument both an `.svg` and a self-contained, interactive `.html` are
+written next to the input.
 5. Optional: To convert the SVG to PDF, I use `rsvg-convert -f pdf -o <output.pdf> <input.svg>`
+
+## Output formats
+
+* **SVG** (`<input>.svg`) — the vectorized graph, sized to the exported
+  coordinates. Suitable for PDF conversion or further editing.
+* **HTML** (`<input>.html`) — the same graph as a single interactive page with
+  drag-to-pan and wheel-to-zoom. Everything is inlined, so it renders offline
+  with no CDN or network access.
 
 ## Building for Linux
 
