@@ -164,8 +164,8 @@ static std::string fmt(const char *f, ...) {
 // ---------------------------------------------------------------- geometry
 static const int   TITLE_H   = 16;
 static const double LINE_H   = 17.0;
-static const double FONT_PX  = 12.0;   // measured: 7.16 px/char vs IDA's 7.15
-static const double EDGE_W   = 1.3;
+static const double FONT_PX  = 11.8;   // ~7.10 px/char; 12px overflowed the widest line
+static const double EDGE_W   = 1.0;   // line thickness (screen px)
 static const double ARROW_L  = 9.0;
 static const double ARROW_W  = 7.0;
 
@@ -231,17 +231,24 @@ static std::string build_edges(const Json::Value &g, double ox, double oy) {
         double tip_ang = atan2(dy, dx) * 180.0 / M_PI;
         std::string col = css_rgb(e["color"].asUInt());
 
-        arrows += fmt("<div class=\"arrow\" style=\""
-                      "left:calc(%.1fpx - %.1fpx * var(--iw,1));"
-                      "top:calc(%.1fpx - %.1fpx * var(--iw,1));"
-                      "border-width:calc(%.1fpx * var(--iw,1)) 0 "
-                      "calc(%.1fpx * var(--iw,1)) calc(%.1fpx * var(--iw,1));"
-                      "border-color:transparent transparent transparent %s;"
+        /* The head is a CSS border triangle whose apex is the mid-point of its
+         * right edge, at (ARROW_L, ARROW_W/2) before rotation. Subtracting that
+         * offset un-rotated puts the tip past the endpoint and swings it off the
+         * line; the offset has to be rotated by the same angle first. Sizes are
+         * in --iu units (1/zoom) so the head keeps a constant screen size, and
+         * the apex lands on the endpoint for every zoom. */
+        double ra = tip_ang * M_PI / 180.0;
+        double apex_x = ARROW_L * cos(ra) - (ARROW_W / 2) * sin(ra);
+        double apex_y = ARROW_L * sin(ra) + (ARROW_W / 2) * cos(ra);
+
+        arrows += fmt("<div class=\"arrow\" style=\"--c:%s;"
+                      "left:calc(%.2fpx - %.2f * var(--iu,1px));"
+                      "top:calc(%.2fpx - %.2f * var(--iu,1px));"
                       "transform:rotate(%.2fdeg)\"></div>",
-                      pts[last].first, ARROW_L,
-                      pts[last].second, ARROW_W / 2,
-                      ARROW_W / 2, ARROW_W / 2, ARROW_L,
-                      col.c_str(), tip_ang);
+                      col.c_str(),
+                      pts[last].first, apex_x,
+                      pts[last].second, apex_y,
+                      tip_ang);
 
         for (size_t i = 0; i + 1 < pts.size(); i++) {
             double px = pts[i].first, py = pts[i].second;
@@ -251,24 +258,24 @@ static std::string build_edges(const Json::Value &g, double ox, double oy) {
             if (len < 0.5) continue;
             double ang = atan2(ddy, ddx) * 180.0 / M_PI;
 
-            /* Two rectangles meeting end-to-end leave a notch on the outside of
-             * a bend. Extending by half the line width fills it - but only on
-             * ONE side of each joint: extending both ends makes the two
-             * extensions cross and draw a visible "+" past the corner. So every
-             * segment except the first reaches back half a width at its start,
-             * and each joint is covered exactly once.
-             *
-             * The final point is shared with the arrowhead, which covers the
-             * joint itself, so no segment is extended at its end. */
-            double extend = EDGE_W / 2.0;
-            double start = (i == 0) ? 0.0 : extend;
-            double width = len + start;
-            double sx = px - ddx / len * start;
-            double sy = py - ddy / len * start;
-
             lines += fmt("<div class=\"edge\" style=\"--c:%s;left:%.2fpx;top:%.2fpx;"
                          "width:%.2fpx;transform:rotate(%.2fdeg)\"></div>",
-                         col.c_str(), sx, sy, width, ang);
+                         col.c_str(), px, py, len, ang);
+        }
+
+        /* Fill the joints. Two rectangles meeting at an angle leave a notch on
+         * the outside of the bend, which reads as an unfinished corner. A square
+         * of the line's own thickness centred on each interior vertex covers the
+         * joint at any angle - a square needs no rotation - and cannot overshoot
+         * the way extending the segments does, because it is never wider than
+         * the line itself. That earlier attempt extended both ends and drew a
+         * visible "+" past the corner; this cannot. */
+        for (size_t i = 1; i + 1 < pts.size(); i++) {
+            lines += fmt("<div class=\"cap\" style=\"--c:%s;"
+                         "left:calc(%.2fpx - (1.0px * var(--iwx,1) + 0.8px) / 2);"
+                         "top:calc(%.2fpx - (1.0px * var(--iwx,1) + 0.8px) / 2)\">"
+                         "</div>",
+                         col.c_str(), pts[i].first, pts[i].second);
         }
     }
     return lines + arrows;   // arrowheads above the lines
@@ -332,7 +339,7 @@ bool export_graph_html(const Json::Value &root, const char *filename)
     out << "#wrap{position:absolute;top:40px;left:0;right:0;bottom:0;overflow:hidden;"
            "cursor:grab}#wrap.dragging{cursor:grabbing}\n";
     out << "#world{position:absolute;top:0;left:0;transform-origin:0 0;"
-           "--iw:1;--iwx:1}\n";
+           "--iw:1;--iwx:1;will-change:transform}\n";
     out << "#canvas{position:absolute;top:0;left:0}\n";
     out << "#wrap.dragging{cursor:grabbing}\n";
     out << ".block{position:absolute;box-sizing:border-box;background:#2d2d2d;"
@@ -347,7 +354,7 @@ bool export_graph_html(const Json::Value &root, const char *filename)
      * ligatures are off for the same reason - both shift glyphs off the grid.
      * The script additionally rescales the size so one character is exactly
      * DISASM_PX_PER_CHAR wide whatever face is actually used. */
-    out << ".disasm{position:absolute;left:4px;right:4px;top:" << TITLE_H
+    out << ".disasm{position:absolute;left:3px;right:3px;top:" << TITLE_H
         << "px;line-height:" << LINE_H << "px;white-space:pre;overflow:hidden;"
            "font-family:'FreeMono','DejaVu Sans Mono','Liberation Mono',"
            "'Noto Sans Mono','Courier New',monospace;"
@@ -360,10 +367,16 @@ bool export_graph_html(const Json::Value &root, const char *filename)
      * inverse zoom, so thickness * --iwx is a constant 1.3 + 1.3*zoom - never
      * zero, and at least 1px. transform-origin stays at the left mid-point so
      * the extra thickness grows outward rather than shifting the endpoint. */
-    out << ".edge{position:absolute;margin-top:calc(-0.65px * var(--iwx,1));"
-           "height:calc(1.3px * var(--iwx,1) + 1.3px);"
+    out << ".edge{position:absolute;margin-top:calc(-0.5px * var(--iwx,1));"
+           "height:calc(1.0px * var(--iwx,1) + 0.8px);"
            "background:var(--c,#888);transform-origin:0 50%}\n";
+    out << ".cap{position:absolute;background:var(--c,#888);"
+           "width:calc(1.0px * var(--iwx,1) + 0.8px);"
+           "height:calc(1.0px * var(--iwx,1) + 0.8px)}\n";
     out << ".arrow{position:absolute;width:0;height:0;border-style:solid;"
+           "border-width:calc(3.5px * var(--iwx,1)) 0 "
+           "calc(3.5px * var(--iwx,1)) calc(9px * var(--iwx,1));"
+           "border-color:transparent transparent transparent var(--c,#888);"
            "transform-origin:0 0}\n";
     out << ".block.sel{outline:2px solid #fff;outline-offset:-1px}\n";
     for (unsigned i = 0; i < sizeof(CLR_VALUES) / sizeof(CLR_VALUES[0]); i++)
@@ -383,10 +396,12 @@ var stat=document.getElementById('stat');
 var s=1,tx=0,ty=0;
 function ap(){
   world.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';
-  // --iw / --iwx are the zoom and its inverse, used to keep line thickness and
-  // arrowhead size constant on screen while their positions stay in world units.
+  // --iwx cancels the zoom for things that must stay a constant size on screen
+  // (line thickness, arrowheads); --iu is the same for lengths used inside
+  // calc(), where a bare number cannot be multiplied by a px term.
   world.style.setProperty('--iw',String(s));
   world.style.setProperty('--iwx',String(1/s));
+  world.style.setProperty('--iu',String(1/s)+'px');
   stat.textContent=Math.round(s*100)+'%';
 }
 function ct(){tx=(wrap.clientWidth-W*s)/2;ty=(wrap.clientHeight-H*s)/2;ap();}
