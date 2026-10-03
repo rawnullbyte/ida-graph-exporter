@@ -199,42 +199,66 @@ static Bounds graph_bounds(const Json::Value &g) {
 }
 
 // ------------------------------------------------------------------ render
-// Marker ids must be unique per colour, and stable so identical colours share
-// one definition.
+// Lighten toward white, keeping the hue. t=0 leaves the colour alone, t=1 is
+// pure white.
+static unsigned lighten(unsigned c, double t) {
+    if (t <= 0.0) return c & 0xffffff;
+    if (t > 1.0) t = 1.0;
+    unsigned r = c & 0xff, g = (c >> 8) & 0xff, b = (c >> 16) & 0xff;
+    unsigned nr = (unsigned)(r + (255 - r) * t + 0.5);
+    unsigned ng = (unsigned)(g + (255 - g) * t + 0.5);
+    unsigned nb = (unsigned)(b + (255 - b) * t + 0.5);
+    return (nr & 0xff) | ((ng & 0xff) << 8) | ((nb & 0xff) << 16);
+}
+
+/* The edges leaving one block fade from near-white on the first of them to
+ * their own colour on the last, so a bundle of edges out of a node reads as a
+ * set rather than as unrelated lines.
+ *
+ * The two ends of one edge move in opposite directions on purpose: the source
+ * end carries the edge's rank within its bundle, and the target end is the
+ * plain edge colour. A gradient between them is therefore steepest for the
+ * first edge of a wide bundle and flat for the last, which is what makes the
+ * ordering visible at a glance.
+ *
+ * The lightest tone is 0.65 rather than 1.0: a white line on the dark
+ * background loses its hue and stops being identifiable. */
+static const double EDGE_LIGHTEN_MAX = 0.65;
+
+static unsigned lighten_for_rank(unsigned color, int rank, int total) {
+    if (total <= 1) return color & 0xffffff;
+    double t = EDGE_LIGHTEN_MAX * (1.0 - (double)rank / (double)(total - 1));
+    return lighten(color, t);
+}
+
+// Each distinct (start, end) colour pair needs its own gradient definition.
+static std::string grad_id(unsigned c0, unsigned c1) {
+    return fmt("eg%06x_%06x", c0 & 0xffffff, c1 & 0xffffff);
+}
+
+// Arrowheads: one per distinct rendered colour, so a bundled edge's head
+// matches the colour its line actually ends in.
 static std::string marker_id(unsigned color) {
     return fmt("ar%06x", color & 0xffffff);
 }
 
-// <defs> holding one arrowhead per distinct edge colour. Using SVG markers
-// means the browser draws the head along the path direction itself - no
-// orientation maths, and it scales with the drawing like everything else.
-static std::string build_defs(const Json::Value &g) {
-    std::vector<unsigned> seen;
-    std::string out;
+struct EdgeSpec {
+    unsigned src, dst;          // gradient end colours
+    std::vector<std::pair<double, double>> pts;
+};
 
+/* Work out every edge's endpoints and colours first: the gradients and markers
+ * have to be known before the <defs> block is written, and the bundle ranking
+ * depends on how many edges leave each block. */
+static std::vector<EdgeSpec> collect_edges(const Json::Value &g, double ox, double oy) {
+    std::map<long long, int> out_count;
     for (const auto &e : g["edges"]) {
-        unsigned c = e["color"].asUInt() & 0xffffff;
-        if (std::find(seen.begin(), seen.end(), c) != seen.end())
-            continue;
-        seen.push_back(c);
-
-        /* orient="auto" rotates the head onto the path's direction at its end.
-         * markerUnits is left at its default (strokeWidth) so the head tracks
-         * the line weight, and refX sits on the triangle's apex so the tip
-         * lands exactly on the path end rather than past it. */
-        out += fmt("<marker id=\"%s\" viewBox=\"0 0 10 10\" refX=\"10\" refY=\"5\""
-                   " markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\""
-                   " markerUnits=\"strokeWidth\">"
-                   "<path d=\"M0,0 L10,5 L0,10 z\" fill=\"#%s\"/></marker>",
-                   marker_id(c).c_str(), color_hex(c).c_str());
+        if (e["coords"].size() < 2) continue;
+        out_count[(long long)e["source_id"].asInt64()]++;
     }
-    return out;
-}
 
-// Every edge is a single <path>, so there are no segment joints to fill and
-// nothing can overlap: the browser strokes one continuous polyline.
-static std::string build_edges(const Json::Value &g, double ox, double oy) {
-    std::string paths;
+    std::map<long long, int> seen;
+    std::vector<EdgeSpec> out;
 
     for (const auto &e : g["edges"]) {
         std::vector<std::pair<double, double>> pts;
@@ -245,14 +269,73 @@ static std::string build_edges(const Json::Value &g, double ox, double oy) {
         }
         if (pts.size() < 2) continue;
 
-        std::string d;
-        for (size_t i = 0; i < pts.size(); i++)
-            d += fmt("%s%.2f,%.2f", i ? " L" : "M", pts[i].first, pts[i].second);
+        long long s = (long long)e["source_id"].asInt64();
+        int total = out_count.count(s) ? out_count[s] : 1;
+        int rank = seen.count(s) ? seen[s]++ : (seen[s] = 1, 0);
 
-        unsigned c = e["color"].asUInt() & 0xffffff;
-        paths += fmt("<path d=\"%s\" fill=\"none\" stroke=\"#%s\""
-                     " stroke-width=\"2\" marker-end=\"url(#%s)\"/>",
-                     d.c_str(), color_hex(c).c_str(), marker_id(c).c_str());
+        EdgeSpec spec;
+        spec.dst = e["color"].asUInt() & 0xffffff;
+        spec.src = lighten_for_rank(spec.dst, rank, total);
+        spec.pts = pts;
+        out.push_back(spec);
+    }
+    return out;
+}
+
+static std::string build_defs(const std::vector<EdgeSpec> &edges) {
+    std::map<std::string, std::string> marks;   // marker id -> element
+    std::map<std::string, std::string> grads;   // gradient id -> element
+
+    for (const auto &e : edges) {
+        std::string mid = marker_id(e.dst);
+        if (!marks.count(mid))
+            marks[mid] = fmt(
+                "<marker id=\"%s\" viewBox=\"0 0 10 10\" refX=\"10\" refY=\"5\""
+                " markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\""
+                " markerUnits=\"strokeWidth\">"
+                "<path d=\"M0,0 L10,5 L0,10 z\" fill=\"#%s\"/></marker>",
+                mid.c_str(), color_hex(e.dst).c_str());
+
+        std::string gid = grad_id(e.src, e.dst);
+        if (!grads.count(gid)) {
+            /* gradientUnits stay in user space: the SVG spans the whole
+             * drawing, so objectBoundingBox would be relative to that and every
+             * gradient would come out invisible. The axis runs along the
+             * straight line from the edge's first point to its last. */
+            double x1 = e.pts.front().first, y1 = e.pts.front().second;
+            double x2 = e.pts.back().first,  y2 = e.pts.back().second;
+            if (x1 == x2 && y1 == y2) x2 = x1 + 1.0;
+            grads[gid] = fmt(
+                "<linearGradient id=\"%s\" gradientUnits=\"userSpaceOnUse\""
+                " x1=\"%.2f\" y1=\"%.2f\" x2=\"%.2f\" y2=\"%.2f\">"
+                "<stop offset=\"0\" stop-color=\"#%s\"/>"
+                "<stop offset=\"1\" stop-color=\"#%s\"/></linearGradient>",
+                gid.c_str(), x1, y1, x2, y2,
+                color_hex(e.src).c_str(), color_hex(e.dst).c_str());
+        }
+    }
+
+    // Markers first: a gradient that referenced one before its definition would
+    // be fine, but keeping definitions ahead of use avoids any ordering doubt.
+    std::string out;
+    for (const auto &kv : marks) out += kv.second;
+    for (const auto &kv : grads) out += kv.second;
+    return out;
+}
+
+// One <path> per edge, stroked with its gradient and finished with a marker.
+static std::string build_edges(const std::vector<EdgeSpec> &edges) {
+    std::string paths;
+
+    for (const auto &e : edges) {
+        std::string d;
+        for (size_t i = 0; i < e.pts.size(); i++)
+            d += fmt("%s%.2f,%.2f", i ? " L" : "M", e.pts[i].first, e.pts[i].second);
+
+        paths += fmt("<path d=\"%s\" fill=\"none\" stroke=\"url(#%s)\""
+                     " stroke-width=\"2\" stroke-linejoin=\"round\""
+                     " marker-end=\"url(#%s)\"/>",
+                     d.c_str(), grad_id(e.src, e.dst).c_str(), marker_id(e.dst).c_str());
     }
     return paths;
 }
@@ -297,10 +380,11 @@ bool export_graph_html(const Json::Value &root, const char *filename)
     /* Edges go in one SVG layer sized to the whole drawing; the blocks sit on
      * top as ordinary positioned divs. The browser draws the polylines and
      * their markers, so there is no per-segment geometry to get wrong. */
+    std::vector<EdgeSpec> especs = collect_edges(g, ox, oy);
     std::string edges =
         fmt("<svg class=\"edges\" width=\"%d\" height=\"%d\" "
             "xmlns=\"http://www.w3.org/2000/svg\"><defs>%s</defs>%s</svg>",
-            (int)W, (int)H, build_defs(g).c_str(), build_edges(g, ox, oy).c_str());
+            (int)W, (int)H, build_defs(especs).c_str(), build_edges(especs).c_str());
 
     std::string content = edges + build_blocks(g, ox, oy);
     std::string title = esc(g["name"].asString()) + " - graph";
