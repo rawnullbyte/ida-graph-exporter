@@ -348,7 +348,7 @@ static bool query_export_file_name(char *res, size_t res_len)
 		/* The following is horrible, so let's wrap it in a try / catch until somebody
 		* cleans it up. */
 		file_name = get_path(PATH_TYPE_IDB);
-		file_name = file_name.substr(0, file_name.rfind("." IDB_EXT)) + ".json";
+		file_name = file_name.substr(0, file_name.rfind("." IDB_EXT)) + ".html";
 #ifdef __NT__
 		file_name = file_name.substr(file_name.find_last_of('\\'));
 #else
@@ -356,7 +356,7 @@ static bool query_export_file_name(char *res, size_t res_len)
 #endif
 	}
 	catch (...) {
-		file_name = "export.json";
+		file_name = "export.html";
 	}
 
 	qstrncpy(res, file_name.c_str(), res_len);
