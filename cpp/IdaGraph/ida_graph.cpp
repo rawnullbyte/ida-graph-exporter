@@ -195,13 +195,24 @@ static bool export_function(Json::Value &j_func, func_t *func, ida_mutable_graph
 	if (!j_func.empty() || !func)
 		return false;
 
-	fc = qflow_chart_t("", func, BADADDR, BADADDR, 0);
+	/* Use create() rather than constructing a temporary and assigning it: the
+	 * assignment relies on the implicitly generated operator= for a class with
+	 * a vtable and graph members, whereas create() is the documented path. */
+	fc.create("", func, BADADDR, BADADDR, 0);
 
-	if (fc.empty())
-		return false;
+	msg("GraphExporter: func=%p start=%#llx blocks=%d empty=%d gid=%#llx\n",
+		(void *)func, (unsigned long long)func->start_ea, (int)fc.size(),
+		(int)fc.empty(), (unsigned long long)(graph ? graph->gid : 0));
 
-	if (get_func_name(&func_name, func->start_ea) <= 0)
+	if (fc.empty()) {
+		msg("GraphExporter: FAIL fc.empty()\n");
 		return false;
+	}
+
+	if (get_func_name(&func_name, func->start_ea) <= 0) {
+		msg("GraphExporter: FAIL get_func_name()\n");
+		return false;
+	}
 
 	/* Okay, if we got at least a function with a non-empty flow chart and a name,
 	 * on any error we might encounter from now on, we fail gracefully by returning
@@ -425,14 +436,20 @@ bool idaapi export_current_graph(size_t)
 	}
 
 	if (!(func = get_func(g->gid))) {
+		msg("GraphExporter: FAIL get_func(gid=%#llx)\n", (unsigned long long)g->gid);
 		warning("Failed to retrieve current function.\n");
 		return false;
 	}
+
+	msg("GraphExporter: gv=%p graph=%p gid=%#llx nodes=%d -> func %#llx\n",
+		(void *)gv, (void *)g, (unsigned long long)g->gid,
+		(int)g->nodes.size(), (unsigned long long)func->start_ea);
 
 	show_wait_box("Exporting function at %#x ...\n", func->start_ea);
 
 	if (export_function(j_cur_func, func, g) == false) {
 		hide_wait_box();
+		msg("GraphExporter: FAIL export_function()\n");
 		warning("Export failed. Did you focus a flow chart window when invoking the plugin?");
 		return false;
 	}
