@@ -109,7 +109,9 @@ static bool get_font_params(font_params_t *fparams)
 	/* Let IDA's registry abstraction handle the platform specifics: it maps to
 	 * the Windows registry on Windows and to ida.reg on Linux/macOS, so the
 	 * same value names work everywhere. This mirrors the Windows path above
-	 * (HKCU\Software\Hex-Rays\IDA\Font\Disassembly). If the key is absent, we
+	 * (HKCU\Software\Hex-Rays\IDA\Font\Disassembly). Note the backslash: IDA's
+	 * registry subkeys are backslash-separated (verified against IDA 9.3,
+	 * where a forward slash silently reads nothing). If the key is absent we
 	 * return false and the caller substitutes default values. */
 	qstring font_name;
 
@@ -121,7 +123,7 @@ static bool get_font_params(font_params_t *fparams)
 	fparams->name_len = sizeof(fparams->name) - 1;
 	fparams->size = UINT_MAX;
 
-	if (!reg_read_string(&font_name, "Name", "Font/Disassembly")) {
+	if (!reg_read_string(&font_name, "Name", "Font\\Disassembly")) {
 		return false;
 	}
 
@@ -130,13 +132,13 @@ static bool get_font_params(font_params_t *fparams)
 
 	/* Size and the style flags are missing from the registry until the user has
 	 * customized the disassembly font, so fall back to IDA's defaults. */
-	fparams->size = (unsigned int)reg_read_int("Size", 12, "Font/Disassembly");
+	fparams->size = (unsigned int)reg_read_int("Size", 12, "Font\\Disassembly");
 
-	if (reg_read_int("Bold", 0, "Font/Disassembly") == 1) {
+	if (reg_read_int("Bold", 0, "Font\\Disassembly") == 1) {
 		fparams->flags |= FONT_PARAM_BOLD;
 	}
 
-	if (reg_read_int("Italic", 0, "Font/Disassembly") == 1) {
+	if (reg_read_int("Italic", 0, "Font\\Disassembly") == 1) {
 		fparams->flags |= FONT_PARAM_ITALIC;
 	}
 
@@ -385,8 +387,13 @@ static bool json_dump_font_parameters(Json::Value &j_root)
 
 bool idaapi export_current_graph(size_t)
 {
-	graph_viewer_t *gv = (graph_viewer_t *)get_current_viewer();
-	ida_mutable_graph_t *g = get_viewer_graph(gv);
+	/* get_current_viewer() returns a TWidget*, which is not necessarily a graph
+	 * viewer (it may be the disassembly view). IDA 9 requires the widget to be
+	 * resolved to its graph viewer; casting the widget straight to
+	 * graph_viewer_t* yields a bogus pointer whenever the focused widget is not
+	 * a graph, and even when it is. */
+	graph_viewer_t *gv = get_graph_viewer(get_current_viewer());
+	ida_mutable_graph_t *g = gv ? get_viewer_graph(gv) : nullptr;
 	func_t *func = NULL;
 	char file_name[QMAXPATH] = { 0 };
 
@@ -395,7 +402,17 @@ bool idaapi export_current_graph(size_t)
 	Json::Value j_cur_func;
 
 	if (!g) {
-		warning("Please focus a flow graph window when running this plugin.\n");
+		/* Distinguish "no widget focused" from "widget is not a graph" from
+		 * "the graph has no interactive layout yet" -- the original message
+		 * lumped all three together, which made failures hard to diagnose. */
+		if (!gv) {
+			warning("No graph viewer found for the focused widget.\n"
+				"Focus the graph window of a function (press spacebar on a "
+				"function to open its graph view) and try again.\n");
+		} else {
+			warning("The focused graph viewer has no interactive graph yet.\n"
+				"Try clicking inside the graph window once, then export again.\n");
+		}
 		return false;
 	}
 
