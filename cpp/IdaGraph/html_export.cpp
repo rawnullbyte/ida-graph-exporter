@@ -141,13 +141,24 @@ static std::string esc(const std::string &s) {
     return o;
 }
 
+// Sized to fit the result, never truncated. A block div carries every
+// disassembly span it contains, so these strings run to tens of kilobytes; a
+// fixed buffer silently cut them off mid-tag and the browser then recovered
+// from the malformed markup in ways that nested blocks inside one another.
 static std::string fmt(const char *f, ...) {
-    char buf[512];
-    va_list ap;
+    va_list ap, ap2;
     va_start(ap, f);
-    vsnprintf(buf, sizeof(buf), f, ap);
+    va_copy(ap2, ap);
+    int n = vsnprintf(nullptr, 0, f, ap);
     va_end(ap);
-    return buf;
+    if (n <= 0) {
+        va_end(ap2);
+        return std::string();
+    }
+    std::vector<char> buf((size_t)n + 1);
+    vsnprintf(buf.data(), buf.size(), f, ap2);
+    va_end(ap2);
+    return std::string(buf.data(), (size_t)n);
 }
 
 // ---------------------------------------------------------------- geometry
@@ -226,9 +237,23 @@ static std::string build_edges(const Json::Value &g, double ox, double oy) {
             double len = sqrt(ddx * ddx + ddy * ddy);
             if (len < 0.5) continue;
             double ang = atan2(ddy, ddx) * 180.0 / M_PI;
-            lines += fmt("<div class=\"edge\" style=\"--c:%s;left:%.1fpx;top:%.1fpx;"
-                         "width:%.1fpx;transform:rotate(%.2fdeg)\"></div>",
-                         col.c_str(), px, py, len, ang);
+
+            /* Start each segment half its thickness before the joint and run it
+             * half past the next one owned by this edge. Two rectangles meeting
+             * end-to-end leave a notch on the outside of a corner, which shows
+             * up as a gap at every bend; overlapping by EDGE_W/2 fills it. The
+             * joint at the last point is shared with the arrowhead, which covers
+             * itself, so it is not extended. */
+            double extend = EDGE_W / 2.0;
+            double start = (i == 0) ? 0.0 : extend;
+            double end = (i + 2 < pts.size()) ? extend : 0.0;
+            double width = len + start + end;
+            double sx = px - ddx / len * start;
+            double sy = py - ddy / len * start;
+
+            lines += fmt("<div class=\"edge\" style=\"--c:%s;left:%.2fpx;top:%.2fpx;"
+                         "width:%.2fpx;transform:rotate(%.2fdeg)\"></div>",
+                         col.c_str(), sx, sy, width, ang);
         }
 
         arrows += fmt("<div class=\"arrow\" style=\"left:%.1fpx;top:%.1fpx;"
