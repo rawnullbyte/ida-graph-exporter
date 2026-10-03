@@ -265,7 +265,8 @@ def gen_css(colors, j_root):
             font-family: {};
             font-size: {};
             font-weight: {};
-        }}""".format(j_root["font_name"], j_root["font_size"] * 1.5, "bold" if j_root["font_flags"] & 1 else "regular")
+            overflow: hidden;
+        }}""".format(j_root["font_name"], html_font_px(j_root), "bold" if j_root["font_flags"] & 1 else "regular")
     for i in range(len(colors)):
         res += ".txt_col_{:02x} {{ fill: #{}; }}\n".format(i, color_format(colors[i][0]))
 
@@ -387,9 +388,13 @@ def to_svg(graph, outname):
         col = color_format(e["color"])
         if col in arrows: continue
 
-        head = dwg.marker(size=(8, 10), refX=10, refY=8)  # marker defaults: insert=(0,0)
-        head.viewbox(6, 0, 8, 10)
-        head.add(dwg.path("M6,0 L10,10 L14,0 L10,3 z", fill="#" + col))
+        head = dwg.marker(size=(8, 8), refX=10, refY=5, orient='auto',
+                          markerUnits='userSpaceOnUse')
+        head.viewbox(0, 0, 10, 10)
+        # Points right so that orient="auto" (which rotates the marker's +x
+        # axis onto the path) aims it along the edge. A down-pointing triangle
+        # only looks correct on vertical edges.
+        head.add(dwg.path("M0,0 L10,5 L0,10 L3,5 z", fill="#" + col))
         arrows[col] = head
 
         dwg.defs.add(head)
@@ -443,6 +448,19 @@ def to_svg(graph, outname):
     dwg.save()
 
 
+def html_font_px(j_root):
+    """Font size for the HTML/SVG disassembly text.
+
+    IDA lays the graph out assuming its own disassembly font advance; for the
+    default 9pt font that is ~7.15px per character. Monospace advance is
+    0.597em, so rendering at font_size * 1.5 (1.5 * 9 = 13.5px) gives
+    8.06px/char and every long line spills out of its block. 4/3 keeps the
+    advance at ~7.16px/char, matching the box widths IDA chose, while still
+    looking larger than the 9pt the registry reports.
+    """
+    return j_root["font_size"] * 4.0 / 3.0
+
+
 def gen_html_css(colors, j_root):
     """Styles for the HTML viewer. The SVG stylesheet is not reused because
     half of it (fill/stroke) has no meaning for HTML elements."""
@@ -458,9 +476,10 @@ def gen_html_css(colors, j_root):
                " background: {}; border-bottom: 1px solid #000;"
                " box-sizing: border-box; }}".format(col("normal_title", "#c0c0c0")))
     res.append(".disasm {{ position: absolute; left: 4px; right: 4px; top: 16px;"
-               " line-height: 19.6px; white-space: pre; font-family: {};"
+               " line-height: 19px; white-space: pre; overflow: hidden;"
+               " text-overflow: ellipsis; font-family: {};"
                " font-size: {}px; font-weight: {}; }}".format(
-                   j_root["font_name"], j_root["font_size"] * 1.5,
+                   j_root["font_name"], html_font_px(j_root),
                    "bold" if j_root["font_flags"] & 1 else "normal"))
     for i in range(len(colors)):
         res.append(".txt_col_{:02x} {{ color: #{}; }}".format(i, color_format(colors[i][0])))
@@ -578,10 +597,15 @@ def to_html(graph, outname, title):
         cid = color_format(e["color"])
         if cid not in arrow_ids:
             arrow_ids.append(cid)
+    # Arrowheads. orient="auto" rotates the marker so its +x axis follows the
+    # path direction, so the triangle must point RIGHT in its own coordinates
+    # and refX/refY must be its apex. The SVG version instead relies on the
+    # default orient (pointing down) and a stroke-width-scaled marker, which is
+    # why it can only orient arrows correctly for vertical edges.
     defs = "".join(
-        '<marker id="ar{s}" markerWidth="8" markerHeight="10" refX="10" refY="8"'
-        ' orient="auto" viewBox="6,0,8,10">'
-        '<path d="M6,0 L10,10 L14,0 L10,3 z" fill="#{s}"/></marker>'.format(s=cid)
+        '<marker id="ar{s}" markerUnits="userSpaceOnUse" markerWidth="8"'
+        ' markerHeight="8" refX="10" refY="5" orient="auto" viewBox="0 0 10 10">'
+        '<path d="M0,0 L10,5 L0,10 L3,5 z" fill="#{s}"/></marker>'.format(s=cid)
         for cid in arrow_ids)
 
     polys = []
