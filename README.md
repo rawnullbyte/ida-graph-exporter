@@ -14,6 +14,11 @@ edges are SVG paths following the routed polylines, and the disassembly keeps
 IDA's colours. The whole drawing sits in one transformed layer, so the edges
 and their arrowheads scale with the zoom. Drag to pan, scroll to zoom.
 
+The viewer is contained in an iframe (`srcdoc`) within the exported file. This
+keeps its toolbar and full-page styles from covering a page when the HTML is
+embedded in a Ghost HTML card. The iframe defaults to 70vh tall (at least
+480px); adjust its `height` style in the exported file to change that.
+
 The native code ships (amalgamated) copies of [miniz 3.0.2](https://github.com/richgel999/miniz)
 and [jsoncpp 1.9.5](https://github.com/open-source-parsers/jsoncpp) for
 compression and JSON serialization.

@@ -432,10 +432,11 @@ bool export_graph_html(const Json::Value &root, const char *filename)
     std::string content = edges + build_blocks(g, ox, oy);
     std::string title = esc(g["name"].asString()) + " - graph";
 
-    std::ofstream out(filename, std::ios::binary);
-    if (!out)
-        return false;
-
+    // Render the viewer as its own document, then put that document in an
+    // iframe. When the exported file is pasted into a Ghost HTML card, the
+    // fixed toolbar and full-page styles stay inside the frame instead of
+    // covering the surrounding blog post.
+    std::ostringstream out;
     out << "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>"
         << title << "</title>\n<style>\n";
     out << "html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#1e1e1e;"
@@ -525,6 +526,16 @@ window.addEventListener('resize',ct);
 ft();
 )JS";
     out << "</script>\n</body></html>\n";
-    out.close();
-    return true;
+
+    std::ofstream file(filename, std::ios::binary);
+    if (!file)
+        return false;
+    file << "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+         << "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+         << "<title>" << title << "</title></head><body style=\"margin:0\">\n"
+         << "<iframe title=\"" << title << "\" loading=\"lazy\""
+         << " style=\"display:block;width:100%;height:70vh;min-height:480px;"
+            "border:0;border-radius:6px\" srcdoc=\""
+         << esc(out.str()) << "\"></iframe>\n</body></html>\n";
+    return file.good();
 }
