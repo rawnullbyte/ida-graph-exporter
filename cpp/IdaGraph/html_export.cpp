@@ -218,17 +218,30 @@ static std::string build_edges(const Json::Value &g, double ox, double oy) {
         size_t last = pts.size() - 1;
         double dx = pts[last].first - pts[last - 1].first;
         double dy = pts[last].second - pts[last - 1].second;
+
+        // The line runs all the way to the endpoint; the arrowhead is drawn on
+        // top of it and covers the last ARROW_L of it, so stopping the line
+        // short only ever produced a visible gap.
+        //
+        // The head is a CSS border triangle whose apex is the mid-point of its
+        // right edge. Putting that apex exactly on the endpoint and rotating
+        // about the same point is what keeps the tip on the end of the line.
+        // --iw cancels the world's zoom so the head stays a constant size on
+        // screen, while calc() keeps it anchored to the endpoint as it shrinks.
         double tip_ang = atan2(dy, dx) * 180.0 / M_PI;
-
-        // Shorten the final segment so the line ends under the arrowhead.
-        double seglen = sqrt(dx * dx + dy * dy);
-        if (seglen > 0) {
-            double k = std::max(0.0, (seglen - ARROW_L) / seglen);
-            pts[last].first = pts[last - 1].first + dx * k;
-            pts[last].second = pts[last - 1].second + dy * k;
-        }
-
         std::string col = css_rgb(e["color"].asUInt());
+
+        arrows += fmt("<div class=\"arrow\" style=\""
+                      "left:calc(%.1fpx - %.1fpx * var(--iw,1));"
+                      "top:calc(%.1fpx - %.1fpx * var(--iw,1));"
+                      "border-width:calc(%.1fpx * var(--iw,1)) 0 "
+                      "calc(%.1fpx * var(--iw,1)) calc(%.1fpx * var(--iw,1));"
+                      "border-color:transparent transparent transparent %s;"
+                      "transform:rotate(%.2fdeg)\"></div>",
+                      pts[last].first, ARROW_L,
+                      pts[last].second, ARROW_W / 2,
+                      ARROW_W / 2, ARROW_W / 2, ARROW_L,
+                      col.c_str(), tip_ang);
 
         for (size_t i = 0; i + 1 < pts.size(); i++) {
             double px = pts[i].first, py = pts[i].second;
@@ -238,16 +251,18 @@ static std::string build_edges(const Json::Value &g, double ox, double oy) {
             if (len < 0.5) continue;
             double ang = atan2(ddy, ddx) * 180.0 / M_PI;
 
-            /* Start each segment half its thickness before the joint and run it
-             * half past the next one owned by this edge. Two rectangles meeting
-             * end-to-end leave a notch on the outside of a corner, which shows
-             * up as a gap at every bend; overlapping by EDGE_W/2 fills it. The
-             * joint at the last point is shared with the arrowhead, which covers
-             * itself, so it is not extended. */
+            /* Two rectangles meeting end-to-end leave a notch on the outside of
+             * a bend. Extending by half the line width fills it - but only on
+             * ONE side of each joint: extending both ends makes the two
+             * extensions cross and draw a visible "+" past the corner. So every
+             * segment except the first reaches back half a width at its start,
+             * and each joint is covered exactly once.
+             *
+             * The final point is shared with the arrowhead, which covers the
+             * joint itself, so no segment is extended at its end. */
             double extend = EDGE_W / 2.0;
             double start = (i == 0) ? 0.0 : extend;
-            double end = (i + 2 < pts.size()) ? extend : 0.0;
-            double width = len + start + end;
+            double width = len + start;
             double sx = px - ddx / len * start;
             double sy = py - ddy / len * start;
 
@@ -255,13 +270,6 @@ static std::string build_edges(const Json::Value &g, double ox, double oy) {
                          "width:%.2fpx;transform:rotate(%.2fdeg)\"></div>",
                          col.c_str(), sx, sy, width, ang);
         }
-
-        arrows += fmt("<div class=\"arrow\" style=\"left:%.1fpx;top:%.1fpx;"
-                      "border-width:%.1fpx 0 %.1fpx %.1fpx;"
-                      "border-color:transparent transparent transparent %s;"
-                      "transform:rotate(%.2fdeg)\"></div>",
-                      pts[last].first, pts[last].second,
-                      ARROW_W / 2, ARROW_W / 2, ARROW_L, col.c_str(), tip_ang);
     }
     return lines + arrows;   // arrowheads above the lines
 }
@@ -323,19 +331,41 @@ bool export_graph_html(const Json::Value &root, const char *filename)
     out << "#bar .hint,#bar .stat{color:#999}#bar .hint{margin-left:auto}\n";
     out << "#wrap{position:absolute;top:40px;left:0;right:0;bottom:0;overflow:hidden;"
            "cursor:grab}#wrap.dragging{cursor:grabbing}\n";
-    out << "#world{position:absolute;top:0;left:0;transform-origin:0 0}\n";
+    out << "#world{position:absolute;top:0;left:0;transform-origin:0 0;"
+           "--iw:1;--iwx:1}\n";
     out << "#canvas{position:absolute;top:0;left:0}\n";
+    out << "#wrap.dragging{cursor:grabbing}\n";
     out << ".block{position:absolute;box-sizing:border-box;background:#2d2d2d;"
            "border:1px solid #000}\n";
     out << ".hdr{position:absolute;left:0;top:0;right:0;height:" << TITLE_H
         << "px;background:#c0c0c0;border-bottom:1px solid #000;box-sizing:border-box}\n";
+    /* The disassembly is laid out in columns that only line up in a monospace
+     * face, so the fallback chain must end in the generic monospace keyword.
+     * The font IDA reports by name (FreeMono by default) is often not installed,
+     * and without a fallback the browser substitutes its default *proportional*
+     * font: every column then drifts and the text looks scattered. Kerning and
+     * ligatures are off for the same reason - both shift glyphs off the grid.
+     * The script additionally rescales the size so one character is exactly
+     * DISASM_PX_PER_CHAR wide whatever face is actually used. */
     out << ".disasm{position:absolute;left:4px;right:4px;top:" << TITLE_H
         << "px;line-height:" << LINE_H << "px;white-space:pre;overflow:hidden;"
-           "font-family:FreeMono;font-size:" << FONT_PX << "px;font-weight:bold}\n";
-    out << ".edge{position:absolute;height:" << EDGE_W << "px;margin-top:" << -EDGE_W / 2
-        << "px;background:var(--c,#888);transform-origin:0 50%}\n";
-    out << ".arrow{position:absolute;width:0;height:0;border-style:solid;margin-top:"
-        << -ARROW_W / 2 << "px;transform-origin:50% 50%}\n";
+           "font-family:'FreeMono','DejaVu Sans Mono','Liberation Mono',"
+           "'Noto Sans Mono','Courier New',monospace;"
+           "font-kerning:none;font-variant-ligatures:none;"
+           "font-size:" << FONT_PX << "px;font-weight:bold}\n";
+    /* An edge is a rectangle whose length is in world units but whose thickness
+     * is in device pixels, so it keeps a visible weight at any zoom. CSS floors
+     * a computed length at 0 and browsers then drop the box entirely, which is
+     * what made whole runs of edges vanish when zoomed out; --iwx is the
+     * inverse zoom, so thickness * --iwx is a constant 1.3 + 1.3*zoom - never
+     * zero, and at least 1px. transform-origin stays at the left mid-point so
+     * the extra thickness grows outward rather than shifting the endpoint. */
+    out << ".edge{position:absolute;margin-top:calc(-0.65px * var(--iwx,1));"
+           "height:calc(1.3px * var(--iwx,1) + 1.3px);"
+           "background:var(--c,#888);transform-origin:0 50%}\n";
+    out << ".arrow{position:absolute;width:0;height:0;border-style:solid;"
+           "transform-origin:0 0}\n";
+    out << ".block.sel{outline:2px solid #fff;outline-offset:-1px}\n";
     for (unsigned i = 0; i < sizeof(CLR_VALUES) / sizeof(CLR_VALUES[0]); i++)
         out << ".txt_col_" << fmt("%02x", i) << "{color:#" << color_hex(CLR_VALUES[i]) << "}\n";
     out << "</style></head>\n<body>\n<div id=\"bar\"><span class=\"title\">" << title
@@ -351,16 +381,30 @@ bool export_graph_html(const Json::Value &root, const char *filename)
 var wrap=document.getElementById('wrap'),world=document.getElementById('world');
 var stat=document.getElementById('stat');
 var s=1,tx=0,ty=0;
-function ap(){world.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';
-  stat.textContent=Math.round(s*100)+'%';}
+function ap(){
+  world.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';
+  // --iw / --iwx are the zoom and its inverse, used to keep line thickness and
+  // arrowhead size constant on screen while their positions stay in world units.
+  world.style.setProperty('--iw',String(s));
+  world.style.setProperty('--iwx',String(1/s));
+  stat.textContent=Math.round(s*100)+'%';
+}
 function ct(){tx=(wrap.clientWidth-W*s)/2;ty=(wrap.clientHeight-H*s)/2;ap();}
 function ft(){s=Math.min(wrap.clientWidth/W,wrap.clientHeight/H);ct();}
 function za(f,cx,cy){var n=Math.min(16,Math.max(.01,s*f));
   tx=cx-(cx-tx)*(n/s);ty=cy-(cy-ty)*(n/s);s=n;ap();}
 var d=0,sx=0,sy=0;
 function sync(e){sx=e.clientX-tx;sy=e.clientY-ty;}
-wrap.addEventListener('mousedown',function(e){if(e.button)return;d=1;sync(e);
-  wrap.classList.add('dragging');});
+// A press that lands on disassembly text is left alone so the text can be
+// selected; panning starts from the background or a block's title bar.
+function onText(e){
+  return !!(e.target&&e.target.closest&&e.target.closest('.disasm'));
+}
+wrap.addEventListener('mousedown',function(e){
+  if(e.button!==0)return;
+  if(onText(e))return;
+  d=1;sync(e);wrap.classList.add('dragging');
+});
 window.addEventListener('mousemove',function(e){if(!d)return;
   tx=e.clientX-sx;ty=e.clientY-sy;ap();});
 window.addEventListener('mouseup',function(){d=0;wrap.classList.remove('dragging');});
