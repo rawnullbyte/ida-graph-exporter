@@ -66,9 +66,17 @@ OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 # -ffile-prefix-map keeps absolute build paths out of the binary, so artifacts
 # built in a different directory (or on a CI runner) come out identical.
+#
+# __EA64__ and __X64__ are mandatory for 64-bit IDA and are NOT inferred by the
+# SDK: they control sizeof(ea_t) and the IDP_INTERFACE_VERSION-visible layouts.
+# Without them ea_t is 4 bytes, func_t is 120 bytes instead of 144 (so every
+# func_t field is read at the wrong offset) and BADADDR is 0xffffffff, which
+# makes qflow_chart_t() produce zero blocks. The SDK's own makefile builds with
+# "__EA64__=1 __X64__=1"; see src/makefile and src/allmake.mak.
 MAP_FLAGS=(-ffile-prefix-map="$SRC_DIR"=. -ffile-prefix-map="$SDK_DIR"=idasdk)
-CXXFLAGS=(-std=c++17 -fPIC -O2 "${MAP_FLAGS[@]}")
-CFLAGS=(-fPIC -O2 "${MAP_FLAGS[@]}")
+ABI_FLAGS=(-D__EA64__ -D__X64__)
+CXXFLAGS=(-std=c++17 -fPIC -O2 "${ABI_FLAGS[@]}" "${MAP_FLAGS[@]}")
+CFLAGS=(-fPIC -O2 "${ABI_FLAGS[@]}" "${MAP_FLAGS[@]}")
 # The plugin source builds warning-free; third-party sources are silenced below.
 # -Wno-unknown-pragmas covers the MSVC #pragma warning blocks in the source,
 # which GCC correctly ignores.

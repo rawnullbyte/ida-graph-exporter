@@ -222,13 +222,13 @@ static bool export_function(Json::Value &j_func, func_t *func, ida_mutable_graph
 
 	j_func["has_graph"] = graph != NULL;
 	j_func["name"] = func_name.c_str();
-	j_func["start"] = func->start_ea;
-	j_func["end"] = func->end_ea;
+	j_func["start"] = (Json::UInt64)func->start_ea;
+	j_func["end"] = (Json::UInt64)func->end_ea;
 	j_func["bitness"] = get_func_bits(func);
 	j_func["flags"] = (Json::UInt64)func->flags;
 	j_func["color"] = func->color;
-	j_func["frame_size"] = func->frsize;
-	j_func["frame_pointer_delta"] = func->fpd;
+	j_func["frame_size"] = (Json::UInt64)func->frsize;
+	j_func["frame_pointer_delta"] = (Json::Int64)func->fpd;
 
 	if (!base64_encode_memory(func->start_ea, func->end_ea - func->start_ea, &comp_mem)) {
 		j_func["error"] = "Error while compressing and base64 encoding function bytes.";
@@ -267,8 +267,8 @@ static bool export_function(Json::Value &j_func, func_t *func, ida_mutable_graph
 			j_cur_bb["bottom"] = -1;
 		}
 
-		j_cur_bb["addr_start"] = bb.start_ea;
-		j_cur_bb["addr_end"] = bb.end_ea;
+		j_cur_bb["addr_start"] = (Json::UInt64)bb.start_ea;
+		j_cur_bb["addr_end"] = (Json::UInt64)bb.end_ea;
 		j_cur_bb["id"] = i;
 		j_cur_bb["compressed"] = needs_compression;
 
