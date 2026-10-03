@@ -199,143 +199,186 @@ static Bounds graph_bounds(const Json::Value &g) {
 }
 
 // ------------------------------------------------------------------ render
-// Lighten toward white, keeping the hue. t=0 leaves the colour alone, t=1 is
-// pure white.
-static unsigned lighten(unsigned c, double t) {
-    if (t <= 0.0) return c & 0xffffff;
-    if (t > 1.0) t = 1.0;
-    unsigned r = c & 0xff, g = (c >> 8) & 0xff, b = (c >> 16) & 0xff;
-    unsigned nr = (unsigned)(r + (255 - r) * t + 0.5);
-    unsigned ng = (unsigned)(g + (255 - g) * t + 0.5);
-    unsigned nb = (unsigned)(b + (255 - b) * t + 0.5);
-    return (nr & 0xff) | ((ng & 0xff) << 8) | ((nb & 0xff) << 16);
-}
+// A fixed palette of saturated pastel hues at the same lightness (0.66 HSL).
+// These have more contrast against the dark graph background than the earlier
+// pale palette, without ranking edges by how white they are. Values use IDA's
+// BGR encoding; color_hex() converts them to CSS RGB.
+static const unsigned EDGE_PASTELS[] = {
+    0xdba276, // blue
+    0x9473de, // rose
+    0xd47dae, // violet
+    0x73b1de, // amber
+    0xa0d47d, // mint
+    0x7bced5, // yellow
+    0xdb9275, // periwinkle
+    0xc47dd4, // orchid
+    0x7db1d4, // apricot
+    0xbfd47d, // teal
+};
+static const size_t EDGE_PASTEL_COUNT = sizeof(EDGE_PASTELS) / sizeof(EDGE_PASTELS[0]);
+static const double BUNDLE_DISTANCE = 24.0;
+static const double BUNDLE_OVERLAP = 20.0;
 
-/* The edges leaving one block fade from near-white on the first of them to
- * their own colour on the last, so a bundle of edges out of a node reads as a
- * set rather than as unrelated lines.
- *
- * The two ends of one edge move in opposite directions on purpose: the source
- * end carries the edge's rank within its bundle, and the target end is the
- * plain edge colour. A gradient between them is therefore steepest for the
- * first edge of a wide bundle and flat for the last, which is what makes the
- * ordering visible at a glance.
- *
- * The lightest tone is 0.65 rather than 1.0: a white line on the dark
- * background loses its hue and stops being identifiable. */
-static const double EDGE_LIGHTEN_MAX = 0.65;
-
-static unsigned lighten_for_rank(unsigned color, int rank, int total) {
-    if (total <= 1) return color & 0xffffff;
-    double t = EDGE_LIGHTEN_MAX * (1.0 - (double)rank / (double)(total - 1));
-    return lighten(color, t);
-}
-
-// Each distinct (start, end) colour pair needs its own gradient definition.
-static std::string grad_id(unsigned c0, unsigned c1) {
-    return fmt("eg%06x_%06x", c0 & 0xffffff, c1 & 0xffffff);
-}
-
-// Arrowheads: one per distinct rendered colour, so a bundled edge's head
-// matches the colour its line actually ends in.
 static std::string marker_id(unsigned color) {
-    return fmt("ar%06x", color & 0xffffff);
+    return "ar" + color_hex(color);
 }
 
 struct EdgeSpec {
-    unsigned src, dst;          // gradient end colours
+    unsigned base_color, color;
     std::vector<std::pair<double, double>> pts;
 };
 
-/* Work out every edge's endpoints and colours first: the gradients and markers
- * have to be known before the <defs> block is written, and the bundle ranking
- * depends on how many edges leave each block. */
-static std::vector<EdgeSpec> collect_edges(const Json::Value &g, double ox, double oy) {
-    std::map<long long, int> out_count;
-    for (const auto &e : g["edges"]) {
-        if (e["coords"].size() < 2) continue;
-        out_count[(long long)e["source_id"].asInt64()]++;
+struct EdgeSegment {
+    double x, y, dx, dy, length;
+};
+
+static std::vector<EdgeSegment> longest_segments(const EdgeSpec &edge) {
+    std::vector<EdgeSegment> segments;
+    for (size_t i = 1; i < edge.pts.size(); i++) {
+        double x = edge.pts[i - 1].first, y = edge.pts[i - 1].second;
+        double dx = edge.pts[i].first - x, dy = edge.pts[i].second - y;
+        double length = std::hypot(dx, dy);
+        if (length >= 0.5)
+            segments.push_back({x, y, dx / length, dy / length, length});
     }
+    std::sort(segments.begin(), segments.end(),
+              [](const EdgeSegment &a, const EdgeSegment &b) { return a.length > b.length; });
+    if (segments.size() > 3) segments.resize(3);
+    return segments;
+}
 
-    std::map<long long, int> seen;
-    std::vector<EdgeSpec> out;
+static bool run_together(const EdgeSegment &a, const EdgeSegment &b) {
+    double dot = a.dx * b.dx + a.dy * b.dy;
+    if (std::abs(dot) < 0.98) return false;
 
+    // Perpendicular separation, followed by overlap along the first segment.
+    double rx = b.x - a.x, ry = b.y - a.y;
+    if (std::abs(rx * a.dy - ry * a.dx) > BUNDLE_DISTANCE) return false;
+    double start = rx * a.dx + ry * a.dy;
+    double finish = start + dot * b.length;
+    if (finish < start) std::swap(start, finish);
+    return std::min(a.length, finish) - std::max(0.0, start) >= BUNDLE_OVERLAP;
+}
+
+static std::vector<EdgeSpec> collect_edges(const Json::Value &g, double ox, double oy) {
+    std::vector<EdgeSpec> edges;
     for (const auto &e : g["edges"]) {
-        std::vector<std::pair<double, double>> pts;
+        EdgeSpec edge;
         for (const auto &c : e["coords"]) {
             double x, y;
             if (sscanf(c.asString().c_str(), "%lf %lf", &x, &y) == 2)
-                pts.push_back({x - ox, y - oy});
+                edge.pts.push_back({x - ox, y - oy});
         }
-        if (pts.size() < 2) continue;
-
-        long long s = (long long)e["source_id"].asInt64();
-        int total = out_count.count(s) ? out_count[s] : 1;
-        int rank = seen.count(s) ? seen[s]++ : (seen[s] = 1, 0);
-
-        EdgeSpec spec;
-        spec.dst = e["color"].asUInt() & 0xffffff;
-        spec.src = lighten_for_rank(spec.dst, rank, total);
-        spec.pts = pts;
-        out.push_back(spec);
+        if (edge.pts.size() < 2) continue;
+        bool has_length = false;
+        for (size_t i = 1; i < edge.pts.size(); i++) {
+            double dx = edge.pts[i].first - edge.pts[i - 1].first;
+            double dy = edge.pts[i].second - edge.pts[i - 1].second;
+            if (std::hypot(dx, dy) >= 0.5) { has_length = true; break; }
+        }
+        if (!has_length) continue;
+        edge.base_color = e["color"].asUInt() & 0xffffff;
+        edge.color = EDGE_PASTELS[edges.size() % EDGE_PASTEL_COUNT];
+        edges.push_back(std::move(edge));
     }
-    return out;
+
+    // Compare each edge's three longest stretches, not its source or endpoint.
+    // This connects lines sharing a visible corridor even if their sources differ.
+    std::vector<std::vector<EdgeSegment>> runs;
+    std::vector<size_t> parent(edges.size());
+    for (size_t i = 0; i < edges.size(); i++) {
+        runs.push_back(longest_segments(edges[i]));
+        parent[i] = i;
+    }
+    auto root = [&parent](size_t i) {
+        while (parent[i] != i) i = parent[i] = parent[parent[i]];
+        return i;
+    };
+    for (size_t i = 0; i < edges.size(); i++) {
+        for (size_t j = i + 1; j < edges.size(); j++) {
+            if (edges[i].base_color != edges[j].base_color) continue;
+            bool close = false;
+            for (const auto &a : runs[i])
+                for (const auto &b : runs[j])
+                    close |= run_together(a, b);
+            if (close) parent[root(j)] = root(i);
+        }
+    }
+
+    std::map<size_t, std::vector<size_t>> groups;
+    for (size_t i = 0; i < edges.size(); i++) groups[root(i)].push_back(i);
+    for (auto &group : groups) {
+        auto &indices = group.second;
+        if (indices.size() < 2) continue;
+        // Order a corridor sideways, not by export order or source block.
+        // Canonicalise the longest segment's direction so reversed edges use
+        // the same normal when projected to a lateral coordinate.
+        auto lateral = [&runs](size_t i) {
+            const auto &s = runs[i].front();
+            double dx = s.dx, dy = s.dy;
+            if (dx < 0 || (dx == 0 && dy < 0)) { dx = -dx; dy = -dy; }
+            return -dy * (s.x + s.dx * s.length / 2)
+                   + dx * (s.y + s.dy * s.length / 2);
+        };
+        std::sort(indices.begin(), indices.end(),
+                  [&lateral](size_t a, size_t b) { return lateral(a) < lateral(b); });
+        for (size_t rank = 0; rank < indices.size(); rank++)
+            edges[indices[rank]].color = EDGE_PASTELS[rank % EDGE_PASTEL_COUNT];
+    }
+    return edges;
 }
 
 static std::string build_defs(const std::vector<EdgeSpec> &edges) {
-    std::map<std::string, std::string> marks;   // marker id -> element
-    std::map<std::string, std::string> grads;   // gradient id -> element
-
+    std::map<unsigned, std::string> markers;
     for (const auto &e : edges) {
-        std::string mid = marker_id(e.dst);
-        if (!marks.count(mid))
-            marks[mid] = fmt(
-                "<marker id=\"%s\" viewBox=\"0 0 10 10\" refX=\"10\" refY=\"5\""
-                " markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\""
-                " markerUnits=\"strokeWidth\">"
-                "<path d=\"M0,0 L10,5 L0,10 z\" fill=\"#%s\"/></marker>",
-                mid.c_str(), color_hex(e.dst).c_str());
-
-        std::string gid = grad_id(e.src, e.dst);
-        if (!grads.count(gid)) {
-            /* gradientUnits stay in user space: the SVG spans the whole
-             * drawing, so objectBoundingBox would be relative to that and every
-             * gradient would come out invisible. The axis runs along the
-             * straight line from the edge's first point to its last. */
-            double x1 = e.pts.front().first, y1 = e.pts.front().second;
-            double x2 = e.pts.back().first,  y2 = e.pts.back().second;
-            if (x1 == x2 && y1 == y2) x2 = x1 + 1.0;
-            grads[gid] = fmt(
-                "<linearGradient id=\"%s\" gradientUnits=\"userSpaceOnUse\""
-                " x1=\"%.2f\" y1=\"%.2f\" x2=\"%.2f\" y2=\"%.2f\">"
-                "<stop offset=\"0\" stop-color=\"#%s\"/>"
-                "<stop offset=\"1\" stop-color=\"#%s\"/></linearGradient>",
-                gid.c_str(), x1, y1, x2, y2,
-                color_hex(e.src).c_str(), color_hex(e.dst).c_str());
-        }
+        if (markers.count(e.color)) continue;
+        // The visible triangle begins at x=3. With refX=3 the stroke ends
+        // under its base, while the tip extends to the original endpoint.
+        markers[e.color] = fmt(
+            "<marker id=\"%s\" viewBox=\"0 0 10 10\" refX=\"3\" refY=\"5\""
+            " markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\""
+            " markerUnits=\"strokeWidth\">"
+            "<path d=\"M3,2 L10,5 L3,8 z\" fill=\"#%s\"/></marker>",
+            marker_id(e.color).c_str(), color_hex(e.color).c_str());
     }
-
-    // Markers first: a gradient that referenced one before its definition would
-    // be fine, but keeping definitions ahead of use avoids any ordering doubt.
     std::string out;
-    for (const auto &kv : marks) out += kv.second;
-    for (const auto &kv : grads) out += kv.second;
+    for (const auto &kv : markers) out += kv.second;
     return out;
 }
 
-// One <path> per edge, stroked with its gradient and finished with a marker.
+// The stroke ends at the arrowhead's base. The marker's apex extends from
+// refX=3 to x=10: 7/10 of its 7*2px width, or 9.8 world units, placing its tip
+// at the original endpoint while leaving that tip unobscured by the stroke.
 static std::string build_edges(const std::vector<EdgeSpec> &edges) {
     std::string paths;
-
+    static const double TIP_OFFSET = 9.8;
     for (const auto &e : edges) {
-        std::string d;
-        for (size_t i = 0; i < e.pts.size(); i++)
-            d += fmt("%s%.2f,%.2f", i ? " L" : "M", e.pts[i].first, e.pts[i].second);
+        auto pts = e.pts;
+        // A zero-length tail has no direction for orient="auto". IDA may
+        // repeat a routing point, so discard duplicates before placing the tip.
+        for (size_t i = 1; i < pts.size();) {
+            if (std::hypot(pts[i].first - pts[i - 1].first,
+                           pts[i].second - pts[i - 1].second) < 0.5)
+                pts.erase(pts.begin() + i);
+            else
+                i++;
+        }
+        if (pts.size() < 2) continue;
+        auto &end = pts.back();
+        const auto &prev = pts[pts.size() - 2];
+        double dx = end.first - prev.first, dy = end.second - prev.second;
+        double length = std::hypot(dx, dy);
+        double shorten = std::min(TIP_OFFSET, length * 0.5);
+        end = {end.first - shorten * dx / length,
+               end.second - shorten * dy / length};
 
-        paths += fmt("<path d=\"%s\" fill=\"none\" stroke=\"url(#%s)\""
+        std::string d;
+        for (size_t i = 0; i < pts.size(); i++)
+            d += fmt("%s%.2f,%.2f", i ? " L" : "M", pts[i].first, pts[i].second);
+        paths += fmt("<path d=\"%s\" fill=\"none\" stroke=\"#%s\""
                      " stroke-width=\"2\" stroke-linejoin=\"round\""
                      " marker-end=\"url(#%s)\"/>",
-                     d.c_str(), grad_id(e.src, e.dst).c_str(), marker_id(e.dst).c_str());
+                     d.c_str(), color_hex(e.color).c_str(), marker_id(e.color).c_str());
     }
     return paths;
 }
