@@ -31,6 +31,16 @@ The resulting `IdaGraph.so` goes into the `plugins` directory of a 64-bit Linux
 IDA Pro installation. The public SDK only ships 64-bit Linux libraries, so a
 32-bit Linux plugin cannot be linked against it.
 
+### SDK version and IDA compatibility
+
+The build is pinned to SDK `v9.3.0-sdk.3` (see `IDA_SDK_REF` in the workflow)
+rather than the newest SDK. IDA 9.4 renamed `get_func_bitness()` to
+`get_func_bitness_ea()`, so a plugin linked against SDK 9.4 **fails to load in
+IDA 9.3** with an unresolved symbol. IDA 9.4 and newer still export the older
+`get_func_bitness`, so a plugin built against SDK 9.3 loads on 9.3 and newer.
+Building against the newest SDK is therefore not the widest-compatibility
+choice; the workflow's "Check IDA symbols resolve" step guards this.
+
 `.github/workflows/linux.yml` runs the same script and attaches `IdaGraph.so` to
 each workflow run as the `IdaGraph-linux-x86_64` artifact.
 

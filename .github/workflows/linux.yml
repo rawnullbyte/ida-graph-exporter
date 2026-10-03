@@ -9,9 +9,13 @@ on:
 permissions:
   contents: read
 
-# Pinned so the build is reproducible; bump deliberately.
+# Pinned to the SDK matching IDA 9.3. Deliberately not the newest SDK: 9.4
+# renamed get_func_bitness() to get_func_bitness_ea(), so a plugin linked
+# against 9.4 fails to load in IDA 9.3 with an unresolved symbol. IDA 9.4+
+# still exports the old get_func_bitness symbol, so a 9.3-linked plugin loads
+# on 9.3 and everything newer -- one artifact covering more versions.
 env:
-  IDA_SDK_REF: v9.4.0-sdk.1
+  IDA_SDK_REF: v9.3.0-sdk.3
 
 jobs:
   build:
@@ -39,6 +43,20 @@ jobs:
           file cpp/IdaGraph/build/IdaGraph.so
           echo "---"
           readelf -d cpp/IdaGraph/build/IdaGraph.so | grep -E 'NEEDED|RUNPATH' || true
+
+      # A plugin built against a newer SDK than the target IDA can still link
+      # cleanly but fail to load, because IDA resolves these symbols at load
+      # time (e.g. get_func_bitness_ea in 9.4 vs get_func_bitness in 9.3).
+      - name: Check IDA symbols resolve
+        run: |
+          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/ida-sdk/src/lib/x64_linux_64" \
+            ldd -r cpp/IdaGraph/build/IdaGraph.so > ldd.txt 2>&1 || true
+          if grep -q 'undefined symbol' ldd.txt; then
+            echo "::error::Plugin has unresolved IDA symbols:"
+            grep 'undefined symbol' ldd.txt
+            exit 1
+          fi
+          echo "All IDA symbols resolve."
 
       - name: Upload plugin
         uses: actions/upload-artifact@v4
