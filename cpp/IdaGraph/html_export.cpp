@@ -495,6 +495,16 @@ function ap(){
 }
 function ct(){tx=(wrap.clientWidth-W*s)/2;ty=(wrap.clientHeight-H*s)/2;ap();}
 function ft(){s=Math.min(wrap.clientWidth/W,wrap.clientHeight/H);ct();}
+function focusFirst(){
+  var first=document.querySelector('#canvas .block');
+  if(!first){ft();return;}
+  // Keep the entry block fully visible without shrinking the whole graph.
+  var width=first.offsetWidth, height=first.offsetHeight;
+  s=Math.min(1,wrap.clientWidth/(width+40),wrap.clientHeight/(height+40));
+  tx=wrap.clientWidth/2-(first.offsetLeft+width/2)*s;
+  ty=wrap.clientHeight/2-(first.offsetTop+height/2)*s;
+  ap();
+}
 function za(f,cx,cy){var n=Math.min(16,Math.max(.01,s*f));
   tx=cx-(cx-tx)*(n/s);ty=cy-(cy-ty)*(n/s);s=n;ap();}
 var d=0,sx=0,sy=0;
@@ -523,7 +533,7 @@ document.getElementById('bout').addEventListener('click',function(){
   za(0.8,wrap.clientWidth/2,wrap.clientHeight/2);});
 document.getElementById('b1').addEventListener('click',function(){s=1;ct();});
 window.addEventListener('resize',ct);
-ft();
+focusFirst();
 )JS";
     out << "</script>\n</body></html>\n";
 
