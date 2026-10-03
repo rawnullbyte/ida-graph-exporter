@@ -6,11 +6,14 @@
 #pragma warning(disable : 4244)
 #pragma warning(disable : 4267)
 
+#include <algorithm>
+
 #include <ida.hpp>
 #include <idp.hpp>
 #include <graph.hpp>
 #include <loader.hpp>
 #include <kernwin.hpp>
+#include <registry.hpp>
 
 #pragma warning(push)
 #pragma warning(disable: 4996)
@@ -22,6 +25,13 @@
 #pragma warning( pop )
 
 #define BB_COMP_THRESHOLD 0x40
+
+/* IDA 9.2 renamed mutable_graph_t to interactive_graph_t (graph.hpp). */
+#if IDA_SDK_VERSION >= 920
+typedef interactive_graph_t ida_mutable_graph_t;
+#else
+typedef mutable_graph_t ida_mutable_graph_t;
+#endif
 
 struct plugin_ctx_t;
 
@@ -96,8 +106,41 @@ static bool get_font_params(font_params_t *fparams)
 	RegCloseKey(hk);
 	return true;
 #else
-#error (__FUNC__ ": Compiling for unknown operating system. Please implement font parameter retrieval.")
-	return false;
+	/* Let IDA's registry abstraction handle the platform specifics: it maps to
+	 * the Windows registry on Windows and to ida.reg on Linux/macOS, so the
+	 * same value names work everywhere. This mirrors the Windows path above
+	 * (HKCU\Software\Hex-Rays\IDA\Font\Disassembly). If the key is absent, we
+	 * return false and the caller substitutes default values. */
+	qstring font_name;
+
+	if (!fparams) {
+		return false;
+	}
+
+	memset(fparams, 0x00, sizeof(*fparams));
+	fparams->name_len = sizeof(fparams->name) - 1;
+	fparams->size = UINT_MAX;
+
+	if (!reg_read_string(&font_name, "Name", "Font/Disassembly")) {
+		return false;
+	}
+
+	qstrncpy(fparams->name, font_name.c_str(), sizeof(fparams->name));
+	fparams->name_len = font_name.length();
+
+	/* Size and the style flags are missing from the registry until the user has
+	 * customized the disassembly font, so fall back to IDA's defaults. */
+	fparams->size = (unsigned int)reg_read_int("Size", 12, "Font/Disassembly");
+
+	if (reg_read_int("Bold", 0, "Font/Disassembly") == 1) {
+		fparams->flags |= FONT_PARAM_BOLD;
+	}
+
+	if (reg_read_int("Italic", 0, "Font/Disassembly") == 1) {
+		fparams->flags |= FONT_PARAM_ITALIC;
+	}
+
+	return true;
 #endif
 }
 
@@ -139,7 +182,7 @@ static bool base64_encode_memory(ea_t addr, ssize_t size, qstring *res, bool com
 }
 
 /* Dumps function func to j_root. If graph is non-null, also dump basic block and edge coordinates. */
-static bool export_function(Json::Value &j_func, func_t *func, mutable_graph_t *graph = NULL)
+static bool export_function(Json::Value &j_func, func_t *func, ida_mutable_graph_t *graph = NULL)
 {
 	Json::Value j_bbs = Json::arrayValue;
 	Json::Value j_edges = Json::arrayValue;
@@ -169,7 +212,7 @@ static bool export_function(Json::Value &j_func, func_t *func, mutable_graph_t *
 	j_func["start"] = func->start_ea;
 	j_func["end"] = func->end_ea;
 	j_func["bitness"] = get_func_bits(func);
-	j_func["flags"] = func->flags;
+	j_func["flags"] = (Json::UInt64)func->flags;
 	j_func["color"] = func->color;
 	j_func["frame_size"] = func->frsize;
 	j_func["frame_pointer_delta"] = func->fpd;
@@ -182,7 +225,7 @@ static bool export_function(Json::Value &j_func, func_t *func, mutable_graph_t *
 	j_func["bytes"] = comp_mem.c_str();
 
 	if ((j_func["has_graph"] == true) && (fc.blocks.size() != graph->nodes.size())) {
-		num_blocks = min(fc.blocks.size(), graph->nodes.size());
+		num_blocks = std::min(fc.blocks.size(), graph->nodes.size());
 	} else {
 		num_blocks = fc.blocks.size();
 	}
@@ -343,9 +386,9 @@ static bool json_dump_font_parameters(Json::Value &j_root)
 bool idaapi export_current_graph(size_t)
 {
 	graph_viewer_t *gv = (graph_viewer_t *)get_current_viewer();
-	mutable_graph_t *g = get_viewer_graph(gv);
+	ida_mutable_graph_t *g = get_viewer_graph(gv);
 	func_t *func = NULL;
-	char file_name[MAX_PATH] = { 0 };
+	char file_name[QMAXPATH] = { 0 };
 
 	Json::Value j_funcs = Json::arrayValue;
 	Json::Value j_root;

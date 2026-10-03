@@ -15,6 +15,25 @@ The native code ships (amalgamated) copies of [miniz 3.0.2](https://github.com/r
 4. Convert the JSON to SVG using `json2svg.py <output.json>`. The output file name is the same as the input plus an `.svg` suffix.
 5. Optional: To convert the SVG to PDF, I use `rsvg-convert -f pdf -o <output.pdf> <input.svg>`
 
+## Building for Linux
+
+On Linux, the plugin is built as a single 64-bit `IdaGraph.so`. It requires the
+[IDA SDK](https://github.com/HexRaysSA/ida-sdk) and a C++17 compiler; the
+vendored jsoncpp and miniz sources are compiled in, so there are no other
+dependencies.
+
+```bash
+# Uses IDASDK if set, otherwise fetches the pinned SDK revision.
+./cpp/IdaGraph/build_linux.sh [output-dir] [sdk-dir] [sdk-ref]
+```
+
+The resulting `IdaGraph.so` goes into the `plugins` directory of a 64-bit Linux
+IDA Pro installation. The public SDK only ships 64-bit Linux libraries, so a
+32-bit Linux plugin cannot be linked against it.
+
+`.github/workflows/linux.yml` runs the same script and attaches `IdaGraph.so` to
+each workflow run as the `IdaGraph-linux-x86_64` artifact.
+
 ## Example
 
 Screenshot of some function taken from an `/usr/bin/id` binary:

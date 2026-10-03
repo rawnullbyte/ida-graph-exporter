@@ -1,0 +1,49 @@
+name: Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pinned so the build is reproducible; bump deliberately.
+env:
+  IDA_SDK_REF: v9.4.0-sdk.1
+
+jobs:
+  build:
+    name: Build Linux x86_64 plugin
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch IDA SDK
+        uses: actions/checkout@v4
+        with:
+          repository: HexRaysSA/ida-sdk
+          ref: ${{ env.IDA_SDK_REF }}
+          path: ida-sdk
+          # Depth 1: the SDK repository is large and no history is needed.
+          fetch-depth: 1
+
+      - name: Build plugin
+        run: ./cpp/IdaGraph/build_linux.sh cpp/IdaGraph/build "${GITHUB_WORKSPACE}/ida-sdk"
+
+      - name: Report artifact
+        run: |
+          file cpp/IdaGraph/build/IdaGraph.so
+          echo "---"
+          readelf -d cpp/IdaGraph/build/IdaGraph.so | grep -E 'NEEDED|RUNPATH' || true
+
+      - name: Upload plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: IdaGraph-linux-x86_64
+          path: cpp/IdaGraph/build/IdaGraph.so
+          if-no-files-found: error
+          retention-days: 30
