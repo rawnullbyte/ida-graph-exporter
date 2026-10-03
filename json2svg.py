@@ -434,31 +434,51 @@ def to_svg(graph, outname):
         blocks.add(dwg.rect(insert=(b["left"], b["top"]), size=(b["right"] -
                                                                 b["left"], b["bottom"] - b["top"])))
         headers.add(dwg.rect(insert=(b["left"], b["top"]), size=(b["right"] -
-                                                                 b["left"], 16)))
-        y = 32
-        text_block = dwg.text("", insert=(b["left"] + 4, b["top"] + 32))
+                                                                 b["left"], DISASM_TITLE_H)))
+        # Place every line at IDA's own pitch so the last line lands the same
+        # distance (DISASM_BOTTOM_PAD) from the bottom of the block regardless
+        # of how many lines there are.
+        y = DISASM_TITLE_H + DISASM_LINE_H
+        text_block = dwg.text("", insert=(b["left"] + 4, b["top"] + y))
         for l in b["disasm_lines"]:
             parts = decode_disasm_line(base64.b64decode(l["text"]))
             for i, (txt, col) in enumerate(parts):
                 text_block.add(dwg.tspan(txt, class_= f"txt_col_{col:02x}", style="background-color: #{color_format(l['bg_color'])}"))
-            y += 19.6
+            y += DISASM_LINE_H
             text_block.add(dwg.tspan("", y = [b["top"] + y], x = [b["left"] + 4]))
         disasm_block.add(text_block)
 
     dwg.save()
 
 
-def html_font_px(j_root):
-    """Font size for the HTML/SVG disassembly text.
+# Geometry of a basic block as IDA lays it out, recovered from the exported
+# coordinates. Regressing block height against the number of disassembly lines
+# gives height == DISASM_HEADER_H + DISASM_PAD_B + DISASM_LINE_H * n_lines with
+# zero residual across every block, so these are exact rather than eyeballed:
+#
+#     height = 26 + 17 * n_lines   ->   16 (title) + 17 per line + 10 padding
+#
+# Rendering the text at any other pitch makes the gap under the last line grow
+# or shrink with the line count, which is what makes some blocks look padded and
+# others overflow.
+DISASM_TITLE_H = 16      # height of the block's title bar
+DISASM_LINE_H = 17.0     # vertical pitch of one disassembly line
+DISASM_BOTTOM_PAD = 10   # padding below the last line
 
-    IDA lays the graph out assuming its own disassembly font advance; for the
-    default 9pt font that is ~7.15px per character. Monospace advance is
-    0.597em, so rendering at font_size * 1.5 (1.5 * 9 = 13.5px) gives
-    8.06px/char and every long line spills out of its block. 4/3 keeps the
-    advance at ~7.16px/char, matching the box widths IDA chose, while still
-    looking larger than the 9pt the registry reports.
+
+def html_font_px(j_root):
+    """Font size for the disassembly text.
+
+    Two constraints, both measured:
+
+    * Vertical: a line must fit in DISASM_LINE_H (17px). At 12px the glyph
+      box is ~15.6px, so 17px line-height leaves sensible leading.
+    * Horizontal: IDA sized the blocks for ~7.15px per character (measured
+      across all blocks: min 7.12, max 7.18). Monospace advance is 0.597em, so
+      12px gives 7.16px/char. font_size * 1.5 (1.5 * 9 = 13.5px) gives
+      8.06px/char, which is what pushed long lines outside their blocks.
     """
-    return j_root["font_size"] * 4.0 / 3.0
+    return min(j_root["font_size"] * 4.0 / 3.0, DISASM_LINE_H * 0.72)
 
 
 def gen_html_css(colors, j_root):
@@ -475,11 +495,11 @@ def gen_html_css(colors, j_root):
     res.append(".header {{ position: absolute; left: 0; top: 0; right: 0; height: 16px;"
                " background: {}; border-bottom: 1px solid #000;"
                " box-sizing: border-box; }}".format(col("normal_title", "#c0c0c0")))
-    res.append(".disasm {{ position: absolute; left: 4px; right: 4px; top: 16px;"
-               " line-height: 19px; white-space: pre; overflow: hidden;"
-               " text-overflow: ellipsis; font-family: {};"
+    res.append(".disasm {{ position: absolute; left: 4px; right: 4px; top: {}px;"
+               " line-height: {}px; white-space: pre; overflow: hidden;"
+               " font-family: {};"
                " font-size: {}px; font-weight: {}; }}".format(
-                   j_root["font_name"], html_font_px(j_root),
+                   DISASM_TITLE_H, DISASM_LINE_H, j_root["font_name"], html_font_px(j_root),
                    "bold" if j_root["font_flags"] & 1 else "normal"))
     for i in range(len(colors)):
         res.append(".txt_col_{:02x} {{ color: #{}; }}".format(i, color_format(colors[i][0])))
@@ -555,10 +575,16 @@ wrap.addEventListener('wheel', function (e) {
   tx = mx - (mx - tx) * (ns / scale);
   ty = my - (my - ty) * (ns / scale);
   scale = ns; apply();
+  if (down) syncAnchor(e);
 }, { passive: false });
 var down = false, sx = 0, sy = 0;
+// The drag anchor is stored in screen space, so it must be re-derived
+// whenever the transform changes underneath it. Without this, zooming with
+// the wheel while the button is held leaves the anchor stale and the next
+// mousemove snaps the canvas to a new position.
+function syncAnchor(e) { sx = e.clientX - tx; sy = e.clientY - ty; }
 wrap.addEventListener('mousedown', function (e) {
-  down = true; sx = e.clientX - tx; sy = e.clientY - ty;
+  down = true; syncAnchor(e);
   wrap.style.cursor = 'grabbing';
 });
 window.addEventListener('mousemove', function (e) {

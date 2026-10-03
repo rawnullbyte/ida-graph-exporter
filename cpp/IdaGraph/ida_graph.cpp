@@ -21,6 +21,7 @@
 #pragma warning(pop)
 
 #include "miniz.h"
+#include "html_export.hpp"
 
 #pragma warning( pop )
 
@@ -445,7 +446,7 @@ bool idaapi export_current_graph(size_t)
 		(void *)gv, (void *)g, (unsigned long long)g->gid,
 		(int)g->nodes.size(), (unsigned long long)func->start_ea);
 
-	show_wait_box("Exporting function at %#x ...\n", func->start_ea);
+	show_wait_box("Exporting function at %#llx ...\n", (unsigned long long)func->start_ea);
 
 	if (export_function(j_cur_func, func, g) == false) {
 		hide_wait_box();
@@ -455,19 +456,22 @@ bool idaapi export_current_graph(size_t)
 	}
 
 	if (j_cur_func["valid"] == 0) {
-		msg("Information loss while exporting function at %#x. Check the \"error\" field in the produced JSON.\n", func->start_ea);
+		msg("Information loss while exporting function at %#llx. Check the \"error\" field in the produced JSON.\n", (unsigned long long)func->start_ea);
 	}
 
 	j_funcs.append(j_cur_func);
 	j_root["functions"] = j_funcs;
 
-	Json::StreamWriterBuilder wbuilder;
-	wbuilder.settings_["indentation"] = "    ";
-	std::string json_str = Json::writeString(wbuilder, j_root);
+	/* Write the HTML page as well, so this single plugin produces the final
+	 * deliverable and no separate conversion step is needed. */
+	qstring html_name = file_name;
+	size_t dot = html_name.rfind('.');
+	if (dot != qstring::npos)
+		html_name.resize(dot);
+	html_name += ".html";
 
-	FILE *f = qfopen(file_name, "w");
-	qfwrite(f, json_str.c_str(), json_str.size());
-	qfclose(f);
+	if (!export_graph_html(j_root, html_name.c_str()))
+		warning("Failed to write %s\n", html_name.c_str());
 
 	hide_wait_box();
 

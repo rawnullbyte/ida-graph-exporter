@@ -86,6 +86,10 @@ echo "==> Plugin source"
 "$CXX" -c "${CXXFLAGS[@]}" "${PLUGIN_WARNINGS[@]}" -isystem "$SDK_DIR/include" -I"$SRC_DIR" \
     "$SRC_DIR/ida_graph.cpp" -o "$OUT_DIR/ida_graph.o"
 
+echo "==> HTML export"
+"$CXX" -c "${CXXFLAGS[@]}" "${PLUGIN_WARNINGS[@]}" -isystem "$SDK_DIR/include" -I"$SRC_DIR" \
+    "$SRC_DIR/html_export.cpp" -o "$OUT_DIR/html_export.o"
+
 echo "==> jsoncpp (vendored)"
 "$CXX" -c "${CXXFLAGS[@]}" -w -I"$SRC_DIR" "$SRC_DIR/jsoncpp.cpp" -o "$OUT_DIR/jsoncpp.o"
 
@@ -94,7 +98,8 @@ echo "==> miniz (vendored)"
 
 echo "==> Linking IdaGraph.so"
 "$CXX" -shared -o "$OUT_DIR/IdaGraph.so" \
-    "$OUT_DIR/ida_graph.o" "$OUT_DIR/jsoncpp.o" "$OUT_DIR/miniz.o" \
+    "$OUT_DIR/ida_graph.o" "$OUT_DIR/html_export.o" \
+    "$OUT_DIR/jsoncpp.o" "$OUT_DIR/miniz.o" \
     -L"$LIB_DIR" -l:libida.so
 
 echo
