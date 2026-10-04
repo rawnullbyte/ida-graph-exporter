@@ -31,7 +31,12 @@
   ];
 
   // ------------------------------------------------------------- styles
-  var TITLE_H = 16, LINE_H = 17.0, FONT_PX = 11.8;
+  /* IDA sizes every block as 26 + 19 * lines: a 16px title, the disassembly
+   * lines, and 10px of padding under the last one. The pitch therefore has to
+   * be 19, not the 17 the old standalone renderer used — at 17 the text stops
+   * short of the block's own bottom by 10 + 2 * lines, which reads as a gap
+   * that grows with the block. */
+  var TITLE_H = 16, LINE_H = 19.0, FONT_PX = 11.8;
   var BUNDLE_DISTANCE = 24.0, BUNDLE_OVERLAP = 20.0;
   var MIN_SCALE = 0.01, MAX_SCALE = 16;
   /* Touch frames coalesce and arrive late, so one frame can carry a large
@@ -71,6 +76,10 @@
       "'Noto Sans Mono','Courier New',monospace;" +
       "font-kerning:none;font-variant-ligatures:none;" +
       "font-size:" + FONT_PX + "px;font-weight:bold}",
+    // A line with no text must still occupy its slot: IDA gives every line a
+    // row, and without a minimum height empty ones collapse and pull the rest
+    // of the block's text upward.
+    ".ln{min-height:" + LINE_H + "px}",
     "#err{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;",
     "flex-direction:column;gap:10px;text-align:center;padding:24px;color:#e0a0a0}"
   ].join("");
@@ -208,9 +217,19 @@
 
   // ----------------------------------------------------------- disassembly
   /* 0x01 <idx> opens a coloured run, 0x02 <idx> closes it; 0x01 0x28 marks an
-   * address the exporter stripped. Mirrors decode_line() in the plugin. */
+   * address the exporter stripped, and a trailing 0x00 terminates the line.
+   * Mirrors decode_line() in the plugin.
+   *
+   * Runs are flushed when they close AND when the line ends: a line with no
+   * colour markers at all (a comment such as "; __unwind {") has nothing to
+   * close it, so flushing only on 0x02 would drop it. */
   function decodeLine(bytes) {
     var out = [], stack = [], text = "", hidden = 0, p = 0;
+    function flush() {
+      if (text === "") return;
+      out.push([text, stack.length ? stack[stack.length - 1] : 0]);
+      text = "";
+    }
     while (p < bytes.length) {
       var c = bytes[p];
       if (c === 1) {
@@ -218,13 +237,17 @@
         else stack.push(bytes[p + 1]);
         p += 2;
       } else if (c === 2) {
-        if (stack.length) { out.push([text, stack.pop()]); text = ""; }
+        if (stack.length) stack.pop();
+        flush();
         p += 2;
+      } else if (c === 0) {
+        p++;                 // terminator, not content
       } else {
         if (hidden === 0) text += String.fromCharCode(c); else hidden--;
         p++;
       }
     }
+    flush();
     return out;
   }
 
@@ -353,27 +376,24 @@
     function mid(a) { return [(a[0].x + a[1].x) / 2, (a[0].y + a[1].y) / 2]; }
     function dist(a) { return Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y); }
 
-    /* Freeze the transform and the finger geometry at the moment a pinch
-     * begins. Sizes below a few pixels are ignored, so two fingers landing
-     * on nearly the same spot cannot produce a wild scale on the first move. */
-    function beginPinch(a) {
-      var r = wrap.getBoundingClientRect();
-      var d = dist(a), m = mid(a);
-      if (d < PINCH_MIN) return false;
-      anchor = {
-        d0: d, s0: s, tx0: tx, ty0: ty,
-        mid0x: m[0] - r.left, mid0y: m[1] - r.top,
-        dPrev: d
-      };
+    /* Start tracking a pinch. The baseline is deliberately NOT taken here.
+     * Touch drivers commonly report both contacts at nearly the same spot and
+     * settle them over the following frames, and a fast move can arrive in the
+     * same frame as the second touchdown. Anchoring on either would set a
+     * near-zero reference distance and make the first ratio enormous. The
+     * baseline is taken from the first frame that has a usable separation
+     * instead, and that frame does not zoom. */
+    function beginPinch() {
+      anchor = { armed: false, d0: 1, s0: s, tx0: tx, ty0: ty,
+                 mid0x: 0, mid0y: 0, dPrev: 1 };
       panning = false;
-      return true;
     }
 
-    /* Re-derive the transform from the anchor, so the content point under the
-     * initial midpoint stays under the current midpoint. Combined with the
-     * frozen start distance this is scale-invariant: a move of the same
-     * on-screen size changes the scale by the same ratio at any zoom level,
-     * which is what stops a pinch from lurching.
+    /* Re-derive the transform from the baseline, so the content point under
+     * the baseline midpoint stays under the current midpoint. Combined with
+     * the frozen reference distance this is scale-invariant: a move of the
+     * same on-screen size changes the scale by the same ratio at any zoom
+     * level, which is what stops a pinch from lurching.
      *
      * The distance used is bounded against the previous frame's, so a single
      * coalesced frame cannot carry the scale away. Bounding the distance
@@ -381,12 +401,20 @@
      * fingers did, the view moves the same way. */
     function updatePinch(a) {
       var d = dist(a);
-      if (!anchor || anchor.d0 < PINCH_MIN || d < PINCH_MIN) return;
+      if (!anchor || d < PINCH_MIN) return;
+      var r = wrap.getBoundingClientRect();
+      var m = mid(a);
+      if (!anchor.armed) {
+        anchor.armed = true;
+        anchor.d0 = d; anchor.s0 = s;
+        anchor.tx0 = tx; anchor.ty0 = ty;
+        anchor.mid0x = m[0] - r.left; anchor.mid0y = m[1] - r.top;
+        anchor.dPrev = d;
+        return;                     // establish the reference, do not zoom
+      }
       var dEff = Math.min(anchor.dPrev * MAX_STEP, Math.max(anchor.dPrev / MAX_STEP, d));
       anchor.dPrev = dEff;
       var f = dEff / anchor.d0;
-      var r = wrap.getBoundingClientRect();
-      var m = mid(a);
       var s1 = Math.min(MAX_SCALE, Math.max(MIN_SCALE, anchor.s0 * f));
       var ax = (anchor.mid0x - anchor.tx0) / anchor.s0;  // content point
       var ay = (anchor.mid0y - anchor.ty0) / anchor.s0;
@@ -406,9 +434,7 @@
         sx = e.clientX - tx; sy = e.clientY - ty;
         wrap.classList.add("dragging");
       } else if (pts.size === 2) {
-        // If beginPinch declines (fingers too close), panning stays on and the
-        // first finger that moves still pans; the next move re-tries the pinch.
-        if (!beginPinch(ptsArr())) panning = true;
+        beginPinch();
       } else {
         panning = false;
       }
@@ -419,11 +445,7 @@
       if (!pts.has(e.pointerId)) return;
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pts.size >= 2) {
-        var a = ptsArr();
-        // A pinch whose anchor was refused gets another chance once the
-        // fingers are far enough apart to give a stable ratio.
-        if (!anchor) beginPinch(a);
-        updatePinch(a);
+        updatePinch(ptsArr());
       } else if (panning) {
         tx = e.clientX - sx; ty = e.clientY - sy; ap();
       }
