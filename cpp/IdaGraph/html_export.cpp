@@ -80,7 +80,7 @@ bool export_graph_html(const Json::Value &root, const char *filename)
         return false;
 
     const Json::Value &g = root["functions"][0];
-    std::string title = esc(g["name"].asString()) + " - graph";
+    std::string title = esc(g["name"].asString());
 
     /* The viewer renders from geometry and disassembly text; the base64 byte
      * blobs exist for other consumers and are pure weight here. On a large

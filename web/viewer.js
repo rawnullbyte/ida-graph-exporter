@@ -33,6 +33,13 @@
   // ------------------------------------------------------------- styles
   var TITLE_H = 16, LINE_H = 17.0, FONT_PX = 11.8;
   var BUNDLE_DISTANCE = 24.0, BUNDLE_OVERLAP = 20.0;
+  var MIN_SCALE = 0.01, MAX_SCALE = 16;
+  /* Touch frames coalesce and arrive late, so one frame can carry a large
+   * finger movement. Bound how far a single frame may change the scale, so a
+   * bad frame cannot throw the view across the graph. */
+  var MAX_STEP = 2.5;
+  /* Below this separation a two-finger ratio is too unstable to trust. */
+  var PINCH_MIN = 8;
 
   var css = [
     "html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#1e1e1e;",
@@ -328,19 +335,66 @@
       ty = wrap.clientHeight / 2 - (first.offsetTop + h / 2) * s;
       ap();
     }
+    /* Zoom by `f` about a point in wrap-local coordinates. */
     function za(f, cx, cy) {
-      var n = Math.min(16, Math.max(0.01, s * f));
+      var n = Math.min(MAX_SCALE, Math.max(MIN_SCALE, s * f));
       tx = cx - (cx - tx) * (n / s); ty = cy - (cy - ty) * (n / s); s = n; ap();
     }
 
     /* Pointer events cover mouse, touch and pen alike, so the same code pans
      * on a phone as on a desktop. Wheel and pinch are handled separately. */
-    var pts = new Map(), panning = false, sx = 0, sy = 0, pinchDist = 0;
+    var pts = new Map(), panning = false, sx = 0, sy = 0;
+    var anchor = null;   // pinch baseline; see beginPinch()
 
     function onText(e) {
       return !!(e.target && e.target.closest && e.target.closest(".disasm"));
     }
     function ptsArr() { var a = []; pts.forEach(function (p) { a.push(p); }); return a; }
+    function mid(a) { return [(a[0].x + a[1].x) / 2, (a[0].y + a[1].y) / 2]; }
+    function dist(a) { return Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y); }
+
+    /* Freeze the transform and the finger geometry at the moment a pinch
+     * begins. Sizes below a few pixels are ignored, so two fingers landing
+     * on nearly the same spot cannot produce a wild scale on the first move. */
+    function beginPinch(a) {
+      var r = wrap.getBoundingClientRect();
+      var d = dist(a), m = mid(a);
+      if (d < PINCH_MIN) return false;
+      anchor = {
+        d0: d, s0: s, tx0: tx, ty0: ty,
+        mid0x: m[0] - r.left, mid0y: m[1] - r.top,
+        dPrev: d
+      };
+      panning = false;
+      return true;
+    }
+
+    /* Re-derive the transform from the anchor, so the content point under the
+     * initial midpoint stays under the current midpoint. Combined with the
+     * frozen start distance this is scale-invariant: a move of the same
+     * on-screen size changes the scale by the same ratio at any zoom level,
+     * which is what stops a pinch from lurching.
+     *
+     * The distance used is bounded against the previous frame's, so a single
+     * coalesced frame cannot carry the scale away. Bounding the distance
+     * rather than the ratio keeps the direction of travel honest: whatever the
+     * fingers did, the view moves the same way. */
+    function updatePinch(a) {
+      var d = dist(a);
+      if (!anchor || anchor.d0 < PINCH_MIN || d < PINCH_MIN) return;
+      var dEff = Math.min(anchor.dPrev * MAX_STEP, Math.max(anchor.dPrev / MAX_STEP, d));
+      anchor.dPrev = dEff;
+      var f = dEff / anchor.d0;
+      var r = wrap.getBoundingClientRect();
+      var m = mid(a);
+      var s1 = Math.min(MAX_SCALE, Math.max(MIN_SCALE, anchor.s0 * f));
+      var ax = (anchor.mid0x - anchor.tx0) / anchor.s0;  // content point
+      var ay = (anchor.mid0y - anchor.ty0) / anchor.s0;
+      tx = (m[0] - r.left) - ax * s1;
+      ty = (m[1] - r.top) - ay * s1;
+      s = s1;
+      ap();
+    }
 
     wrap.addEventListener("pointerdown", function (e) {
       // Pressing the disassembly with a mouse should still select text.
@@ -352,9 +406,11 @@
         sx = e.clientX - tx; sy = e.clientY - ty;
         wrap.classList.add("dragging");
       } else if (pts.size === 2) {
+        // If beginPinch declines (fingers too close), panning stays on and the
+        // first finger that moves still pans; the next move re-tries the pinch.
+        if (!beginPinch(ptsArr())) panning = true;
+      } else {
         panning = false;
-        var a = ptsArr();
-        pinchDist = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
       }
       e.preventDefault();
     }, { passive: false });
@@ -364,14 +420,10 @@
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pts.size >= 2) {
         var a = ptsArr();
-        var dist = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
-        if (pinchDist > 0 && dist > 0) {
-          var r = wrap.getBoundingClientRect();
-          za(dist / pinchDist,
-             (a[0].x + a[1].x) / 2 - r.left,
-             (a[0].y + a[1].y) / 2 - r.top);
-        }
-        pinchDist = dist;
+        // A pinch whose anchor was refused gets another chance once the
+        // fingers are far enough apart to give a stable ratio.
+        if (!anchor) beginPinch(a);
+        updatePinch(a);
       } else if (panning) {
         tx = e.clientX - sx; ty = e.clientY - sy; ap();
       }
@@ -381,12 +433,14 @@
     function endPointer(e) {
       if (!pts.has(e.pointerId)) return;
       pts.delete(e.pointerId);
-      // Lifting one finger of a pinch hands the gesture back to panning.
+      // Lifting one finger of a pinch hands the gesture back to panning,
+      // re-anchored so the view does not jump as the finger count drops.
       if (pts.size === 1) {
         var a = ptsArr();
+        anchor = null;
         panning = true; sx = a[0].x - tx; sy = a[0].y - ty;
       } else if (pts.size === 0) {
-        panning = false; wrap.classList.remove("dragging");
+        panning = false; anchor = null; wrap.classList.remove("dragging");
       }
     }
     wrap.addEventListener("pointerup", endPointer);
@@ -409,7 +463,7 @@
   // ----------------------------------------------------------------- init
   readGraph().then(function (g) {
     if (typeof g.name === "string" && g.name) {
-      document.title = g.name + " - graph";
+      document.title = g.name;
       var t = document.querySelector('meta[name="graph-title"]');
       if (!t) {
         t = document.createElement("meta");
