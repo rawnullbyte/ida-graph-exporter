@@ -2,15 +2,15 @@
 
 ## What?
 
-Plugin for IDA Pro that exports a function as rendered in the graph view to a
-single self-contained interactive HTML page. The plugin reads the currently
-focused graph view and writes the page directly, so there is no conversion step
-and no other tool to install.
+Plugin for IDA Pro that exports a function as rendered in the graph view to an
+interactive HTML page. The plugin reads the currently focused graph view and
+writes the page directly, so there is no conversion step and no other tool to
+install.
 
-The plugin reads the currently focused graph view and writes a small HTML file
-containing a single iframe. The viewer itself is a static page hosted on GitHub
-Pages (see `web/`), so the file does not need to be regenerated when the viewer
-changes — every export points at the same current viewer.
+The file it writes is small: it contains a single iframe, with the graph
+carried in that iframe's URL fragment. The viewer itself is a static page
+hosted on GitHub Pages (see `web/`), so exports do not need to be regenerated
+when the viewer changes — every export points at the same current viewer.
 
 The graph travels with the export in the iframe URL's fragment, compressed and
 base64url-encoded. A URL fragment is never sent to a server, so the graph data
