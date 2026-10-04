@@ -32,11 +32,11 @@
 
   // ------------------------------------------------------------- styles
   /* IDA sizes every block as 26 + 19 * lines: a 16px title, the disassembly
-   * lines, and 10px of padding under the last one. The pitch therefore has to
-   * be 19, not the 17 the old standalone renderer used — at 17 the text stops
-   * short of the block's own bottom by 10 + 2 * lines, which reads as a gap
-   * that grows with the block. */
-  var TITLE_H = 16, LINE_H = 19.0, FONT_PX = 11.8;
+   * lines, and 10px of padding under the last one. LINE_H is the pitch that
+   * falls out of that for a typical block, and is only the fallback — each
+   * block derives its own pitch from its height below, so the text still fits
+   * whatever layout a given export used. */
+  var TITLE_H = 16, LINE_H = 19.0, BOTTOM_PAD = 10, FONT_PX = 11.8;
   var BUNDLE_DISTANCE = 24.0, BUNDLE_OVERLAP = 20.0;
   var MIN_SCALE = 0.01, MAX_SCALE = 16;
   /* Touch frames coalesce and arrive late, so one frame can carry a large
@@ -225,9 +225,12 @@
    * close it, so flushing only on 0x02 would drop it. */
   function decodeLine(bytes) {
     var out = [], stack = [], text = "", hidden = 0, p = 0;
-    function flush() {
+    /* A run takes the colour being closed when the 0x02 arrives, and the
+     * colour still open when the line simply ends. */
+    function flush(color) {
       if (text === "") return;
-      out.push([text, stack.length ? stack[stack.length - 1] : 0]);
+      if (color === undefined) color = stack.length ? stack[stack.length - 1] : 0;
+      out.push([text, color]);
       text = "";
     }
     while (p < bytes.length) {
@@ -237,8 +240,7 @@
         else stack.push(bytes[p + 1]);
         p += 2;
       } else if (c === 2) {
-        if (stack.length) stack.pop();
-        flush();
+        flush(stack.length ? stack.pop() : 0);
         p += 2;
       } else if (c === 0) {
         p++;                 // terminator, not content
@@ -307,8 +309,18 @@
 
     g.basic_blocks.forEach(function (b) {
       var lines = "";
+      var n = (b.disasm_lines || []).length;
+      /* Derive the line pitch from this block's own height rather than
+       * assuming one. The block's rect is the ground truth: whatever pitch
+       * makes the lines fill it without passing its bottom is the right one,
+       * and for a normal export that is exactly the 19px IDA used. Capping at
+       * LINE_H keeps an unusually tall block from spreading its lines out. */
+      var avail = (b.bottom - b.top) - TITLE_H - BOTTOM_PAD;
+      var pitch = n > 0 ? Math.min(LINE_H, avail / n) : LINE_H;
+      if (!(pitch > 0)) pitch = LINE_H;
       (b.disasm_lines || []).forEach(function (l) {
-        lines += '<div class="ln">';
+        lines += '<div class="ln" style="line-height:' + pitch.toFixed(2) + "px;min-height:" +
+          pitch.toFixed(2) + 'px">';
         decodeLine(b64ToBytes(l.text)).forEach(function (seg) {
           lines += '<span class="txt_col_' + hex2(seg[1]) + '">' + esc(seg[0]) + "</span>";
         });
