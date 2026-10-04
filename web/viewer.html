@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  Hosted viewer for exported IDA graph views.
+
+  The graph travels in the URL fragment, which the browser never sends to the
+  server, so this page can be embedded from a blog without the graph data
+  leaving the reader's machine. See viewer.js for the rendering.
+-->
+<title>IDA graph view</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#1e1e1e;color:#ddd;
+    font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<noscript style="display:block;padding:24px">
+  This graph viewer needs JavaScript.
+</noscript>
+<script src="viewer.js"></script>
+</body>
+</html>

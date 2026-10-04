@@ -7,17 +7,44 @@ single self-contained interactive HTML page. The plugin reads the currently
 focused graph view and writes the page directly, so there is no conversion step
 and no other tool to install.
 
-The page is a single self-contained file — no external assets — so it renders
-offline, including on a machine with no network access. It shows IDA's own
-layout: basic blocks are positioned divs at the coordinates IDA exported, the
-edges are SVG paths following the routed polylines, and the disassembly keeps
-IDA's colours. The whole drawing sits in one transformed layer, so the edges
-and their arrowheads scale with the zoom. Drag to pan, scroll to zoom.
+The plugin reads the currently focused graph view and writes a small HTML file
+containing a single iframe. The viewer itself is a static page hosted on GitHub
+Pages (see `web/`), so the file does not need to be regenerated when the viewer
+changes — every export points at the same current viewer.
 
-The viewer is contained in an iframe (`srcdoc`) within the exported file. This
-keeps its toolbar and full-page styles from covering a page when the HTML is
-embedded in a Ghost HTML card. The iframe defaults to 70vh tall (at least
-480px); adjust its `height` style in the exported file to change that.
+The graph travels with the export in the iframe URL's fragment, compressed and
+base64url-encoded. A URL fragment is never sent to a server, so the graph data
+stays in the reader's browser and never leaves their machine; the export still
+opens from `file://`. The hosted viewer shows IDA's own layout: basic blocks are
+positioned divs at the coordinates IDA exported, the edges are SVG paths
+following the routed polylines, and the disassembly keeps IDA's colours. The
+whole drawing sits in one transformed layer, so the edges and their arrowheads
+scale with the zoom. Drag to pan, scroll to zoom.
+
+Because the viewer runs inside an iframe, its toolbar and full-page styles
+cannot cover a surrounding page — which is what makes the export safe to embed
+in a Ghost HTML card. The iframe defaults to 70vh tall (at least 480px); adjust
+its `height` style in the exported file to change that.
+
+## Hosting the viewer
+
+`.github/workflows/pages.yml` publishes `web/` to GitHub Pages whenever the
+viewer or that workflow changes. The account's user site carries the custom
+domain `nullbyte.rip`, so the project site is served under it at:
+
+```
+https://nullbyte.rip/ida-graph-exporter/viewer.html
+```
+
+The exporter hard-codes that URL in `IDA_GRAPH_VIEWER_URL`
+(`cpp/IdaGraph/html_export.cpp`). Forks can override it at build time:
+
+```bash
+CXXFLAGS="-DIDA_GRAPH_VIEWER_URL='\"https://example.com/viewer.html\"'" ./cpp/IdaGraph/build_linux.sh
+```
+
+Note that Pages for this repository uses `build_type: workflow`, which is what
+`deploy-pages` requires, rather than a branch-folder source.
 
 The native code ships (amalgamated) copies of [miniz 3.0.2](https://github.com/richgel999/miniz)
 and [jsoncpp 1.9.5](https://github.com/open-source-parsers/jsoncpp) for
