@@ -45,9 +45,16 @@
   var MAX_STEP = 2.5;
   /* Below this separation a two-finger ratio is too unstable to trust. */
   var PINCH_MIN = 8;
+  /* The most a pinch may move the view in one frame. A finger cannot cover
+   * this much ground in 16ms, so exceeding it means the reported geometry
+   * changed for a reason the gesture did not intend — a coalesced frame, a
+   * pointer the driver re-identified, or a page zoom rescaling the client
+   * coordinates. Rather than follow it, the gesture re-baselines. */
+  var MAX_PAN_STEP = 200;
 
   var css = [
     "html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#1e1e1e;",
+    "touch-action:none;overscroll-behavior:none;",
     "color:#ddd;font-family:system-ui,-apple-system,'Segoe UI',sans-serif}",
     "#bar{position:fixed;top:0;left:0;right:0;height:40px;z-index:100;display:flex;",
     "align-items:center;gap:8px;padding:0 12px;background:#252526;",
@@ -394,9 +401,14 @@
      * same frame as the second touchdown. Anchoring on either would set a
      * near-zero reference distance and make the first ratio enormous. The
      * baseline is taken from the first frame that has a usable separation
-     * instead, and that frame does not zoom. */
+     * instead, and that frame does not zoom.
+     *
+     * The two pointer ids are recorded so the gesture can be re-baselined
+     * whenever the pair being measured changes — a finger lifted or added
+     * while others stay down — since a distance taken across a different pair
+     * than the baseline was measured on is meaningless. */
     function beginPinch() {
-      anchor = { armed: false, d0: 1, s0: s, tx0: tx, ty0: ty,
+      anchor = { armed: false, idA: null, idB: null, d0: 1, s0: s, tx0: tx, ty0: ty,
                  mid0x: 0, mid0y: 0, dPrev: 1 };
       panning = false;
     }
@@ -412,12 +424,20 @@
      * rather than the ratio keeps the direction of travel honest: whatever the
      * fingers did, the view moves the same way. */
     function updatePinch(a) {
+      if (!anchor || a.length < 2) return;
+      // A different pair than the baseline was taken on: start over rather
+      // than compare distances that are not measuring the same thing.
+      if (anchor.idA !== null && (anchor.idA !== a[0].id || anchor.idB !== a[1].id)) {
+        beginPinch();
+        return;
+      }
       var d = dist(a);
-      if (!anchor || d < PINCH_MIN) return;
+      if (d < PINCH_MIN) return;
       var r = wrap.getBoundingClientRect();
       var m = mid(a);
       if (!anchor.armed) {
         anchor.armed = true;
+        anchor.idA = a[0].id; anchor.idB = a[1].id;
         anchor.d0 = d; anchor.s0 = s;
         anchor.tx0 = tx; anchor.ty0 = ty;
         anchor.mid0x = m[0] - r.left; anchor.mid0y = m[1] - r.top;
@@ -430,9 +450,18 @@
       var s1 = Math.min(MAX_SCALE, Math.max(MIN_SCALE, anchor.s0 * f));
       var ax = (anchor.mid0x - anchor.tx0) / anchor.s0;  // content point
       var ay = (anchor.mid0y - anchor.ty0) / anchor.s0;
-      tx = (m[0] - r.left) - ax * s1;
-      ty = (m[1] - r.top) - ay * s1;
-      s = s1;
+      var ntx = (m[0] - r.left) - ax * s1;
+      var nty = (m[1] - r.top) - ay * s1;
+      /* Last line of defence: whatever produced this frame, do not let it drag
+       * the view further than a finger could have. Re-baselining drops the
+       * frame and the next one is measured from where the view already is. */
+      if (Math.hypot(ntx - tx, nty - ty) > MAX_PAN_STEP) {
+        anchor.d0 = d; anchor.s0 = s; anchor.tx0 = tx; anchor.ty0 = ty;
+        anchor.mid0x = m[0] - r.left; anchor.mid0y = m[1] - r.top;
+        anchor.dPrev = d;
+        return;
+      }
+      tx = ntx; ty = nty; s = s1;
       ap();
     }
 
@@ -441,6 +470,9 @@
       if (e.pointerType === "mouse" && (e.button !== 0 || onText(e))) return;
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+      // The viewport can shrink mid-gesture (the URL bar hiding), and the
+      // stored anchor would then describe a frame that no longer exists.
+      anchor = null;
       if (pts.size === 1) {
         panning = true;
         sx = e.clientX - tx; sy = e.clientY - ty;
@@ -471,14 +503,31 @@
       // re-anchored so the view does not jump as the finger count drops.
       if (pts.size === 1) {
         var a = ptsArr();
-        anchor = null;
-        panning = true; sx = a[0].x - tx; sy = a[0].y - ty;
+        anchor = null;        panning = true; sx = a[0].x - tx; sy = a[0].y - ty;
       } else if (pts.size === 0) {
         panning = false; anchor = null; wrap.classList.remove("dragging");
       }
     }
     wrap.addEventListener("pointerup", endPointer);
     wrap.addEventListener("pointercancel", endPointer);
+    // Mobile browsers occasionally drop a pointerup, leaving a ghost pointer
+    // that would corrupt every gesture after it, so the state is cleared once
+    // no button or contact remains down.
+    window.addEventListener("pointerup", endPointer);
+    window.addEventListener("pointercancel", endPointer);
+    function resetIfIdle(e) {
+      if (pts.size === 0) return;
+      if (e && e.buttons === 0 && e.pointerType === "mouse") {
+        pts.clear(); panning = false; anchor = null;
+        wrap.classList.remove("dragging");
+      }
+    }
+    window.addEventListener("pointerup", resetIfIdle);
+    window.addEventListener("pointercancel", resetIfIdle);
+    window.addEventListener("blur", function () {
+      pts.clear(); panning = false; anchor = null;
+      wrap.classList.remove("dragging");
+    });
 
     wrap.addEventListener("wheel", function (e) {
       e.preventDefault();
@@ -486,11 +535,33 @@
       za(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - r.left, e.clientY - r.top);
       if (panning) { sx = e.clientX - tx; sy = e.clientY - ty; }
     }, { passive: false });
+    /* Safari delivers its page pinch-zoom as gesture events regardless of
+     * touch-action, and zooming the page rescales the client coordinates the
+     * pan and pinch read, which looks exactly like the view jumping. */
+    ["gesturestart", "gesturechange", "gestureend"].forEach(function (t) {
+      wrap.addEventListener(t, function (e) { e.preventDefault(); }, { passive: false });
+      document.addEventListener(t, function (e) { e.preventDefault(); }, { passive: false });
+    });
+
     document.getElementById("bfit").addEventListener("click", ft);
     document.getElementById("bin").addEventListener("click", function () { za(1.25, wrap.clientWidth / 2, wrap.clientHeight / 2); });
     document.getElementById("bout").addEventListener("click", function () { za(0.8, wrap.clientWidth / 2, wrap.clientHeight / 2); });
     document.getElementById("b1").addEventListener("click", function () { s = 1; ct(); });
-    window.addEventListener("resize", ct);
+    /* A phone resizes the viewport whenever the URL bar shows or hides, which
+     * can happen mid-gesture. Re-centring on every resize would throw the view
+     * across the graph for no reason the user asked for, so the content point
+     * at the middle of the view is held in place instead. */
+    var lastW = wrap.clientWidth, lastH = wrap.clientHeight;
+    function onResize() {
+      var nw = wrap.clientWidth, nh = wrap.clientHeight;
+      if (nw === lastW && nh === lastH) return;
+      var cx = nw / 2, cy = nh / 2;
+      var ax = (lastW / 2 - tx) / s, ay = (lastH / 2 - ty) / s;
+      tx = cx - ax * s; ty = cy - ay * s;
+      lastW = nw; lastH = nh;
+      ap();
+    }
+    window.addEventListener("resize", onResize);
     focusFirst();
   }
 
