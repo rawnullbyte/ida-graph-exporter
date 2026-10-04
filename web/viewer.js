@@ -43,10 +43,11 @@
     "#bar button{background:#3a3d41;color:#ddd;border:1px solid #555;border-radius:4px;",
     "padding:4px 10px;cursor:pointer;font-size:13px}",
     "#bar button:hover{background:#4a4d51}",
-    "#bar .title{font-weight:600;margin-right:8px}",
-    "#bar .hint,#bar .stat{color:#999}#bar .hint{margin-left:auto}",
+    "#bar .title{font-weight:600;margin-right:8px;flex:0 1 auto;min-width:0;",
+    "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    "#bar .stat{color:#999;margin-left:auto;white-space:nowrap}",
     "#wrap{position:absolute;top:40px;left:0;right:0;bottom:0;overflow:hidden;",
-    "cursor:grab}#wrap.dragging{cursor:grabbing}",
+    "cursor:grab;touch-action:none}#wrap.dragging{cursor:grabbing}",
     "#world{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}",
     "#canvas{position:absolute;top:0;left:0}",
     ".edges{position:absolute;top:0;left:0;overflow:visible;pointer-events:none}",
@@ -303,8 +304,7 @@
       '<div id="bar"><span class="title"></span>' +
       '<button id="bfit">Fit</button><button id="bin">+</button>' +
       '<button id="bout">&minus;</button><button id="b1">100%</button>' +
-      '<span class="stat" id="stat"></span>' +
-      '<span class="hint">drag to pan &middot; wheel to zoom</span></div>' +
+      '<span class="stat" id="stat"></span></div>' +
       '<div id="wrap"><div id="world"><div id="canvas">' + html + "</div></div></div>";
     document.querySelector("#bar .title").textContent = document.title;
 
@@ -333,20 +333,70 @@
       tx = cx - (cx - tx) * (n / s); ty = cy - (cy - ty) * (n / s); s = n; ap();
     }
 
-    var d = 0, sx = 0, sy = 0;
-    function sync(e) { sx = e.clientX - tx; sy = e.clientY - ty; }
-    function onText(e) { return !!(e.target && e.target.closest && e.target.closest(".disasm")); }
-    wrap.addEventListener("mousedown", function (e) {
-      if (e.button !== 0 || onText(e)) return;
-      d = 1; sync(e); wrap.classList.add("dragging");
-    });
-    window.addEventListener("mousemove", function (e) { if (!d) return; tx = e.clientX - sx; ty = e.clientY - sy; ap(); });
-    window.addEventListener("mouseup", function () { d = 0; wrap.classList.remove("dragging"); });
+    /* Pointer events cover mouse, touch and pen alike, so the same code pans
+     * on a phone as on a desktop. Wheel and pinch are handled separately. */
+    var pts = new Map(), panning = false, sx = 0, sy = 0, pinchDist = 0;
+
+    function onText(e) {
+      return !!(e.target && e.target.closest && e.target.closest(".disasm"));
+    }
+    function ptsArr() { var a = []; pts.forEach(function (p) { a.push(p); }); return a; }
+
+    wrap.addEventListener("pointerdown", function (e) {
+      // Pressing the disassembly with a mouse should still select text.
+      if (e.pointerType === "mouse" && (e.button !== 0 || onText(e))) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+      if (pts.size === 1) {
+        panning = true;
+        sx = e.clientX - tx; sy = e.clientY - ty;
+        wrap.classList.add("dragging");
+      } else if (pts.size === 2) {
+        panning = false;
+        var a = ptsArr();
+        pinchDist = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+      }
+      e.preventDefault();
+    }, { passive: false });
+
+    wrap.addEventListener("pointermove", function (e) {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size >= 2) {
+        var a = ptsArr();
+        var dist = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+        if (pinchDist > 0 && dist > 0) {
+          var r = wrap.getBoundingClientRect();
+          za(dist / pinchDist,
+             (a[0].x + a[1].x) / 2 - r.left,
+             (a[0].y + a[1].y) / 2 - r.top);
+        }
+        pinchDist = dist;
+      } else if (panning) {
+        tx = e.clientX - sx; ty = e.clientY - sy; ap();
+      }
+      e.preventDefault();
+    }, { passive: false });
+
+    function endPointer(e) {
+      if (!pts.has(e.pointerId)) return;
+      pts.delete(e.pointerId);
+      // Lifting one finger of a pinch hands the gesture back to panning.
+      if (pts.size === 1) {
+        var a = ptsArr();
+        panning = true; sx = a[0].x - tx; sy = a[0].y - ty;
+      } else if (pts.size === 0) {
+        panning = false; wrap.classList.remove("dragging");
+      }
+    }
+    wrap.addEventListener("pointerup", endPointer);
+    wrap.addEventListener("pointercancel", endPointer);
+
     wrap.addEventListener("wheel", function (e) {
       e.preventDefault();
       var r = wrap.getBoundingClientRect();
       za(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - r.left, e.clientY - r.top);
-      if (d) sync(e);
+      if (panning) { sx = e.clientX - tx; sy = e.clientY - ty; }
     }, { passive: false });
     document.getElementById("bfit").addEventListener("click", ft);
     document.getElementById("bin").addEventListener("click", function () { za(1.25, wrap.clientWidth / 2, wrap.clientHeight / 2); });
